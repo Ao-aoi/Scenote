@@ -494,3 +494,16 @@ button.link { border: none; background: none; color: var(--accent); padding: 0; 
   .chat { position: absolute; inset: 0 0 0 auto; z-index: 9; width: min(460px, 100vw); box-shadow: -4px 0 16px rgba(0, 0, 0, 0.2); }
   .status { font-size: 0.75rem; }
 }
+
+/* ---- 狭い画面のトップバー（ボタンのアイコン化は 820px 以下の規則で行う） ---- */
+@media (max-width: 820px) {
+  .status { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+}
+@media (max-width: 520px) {
+  .topbar { gap: 2px; padding-left: 6px; padding-right: 6px; }
+  .icon-button { min-width: 38px; padding: 4px 6px; }
+  .status { max-width: 76px; font-size: 0.7rem; }
+}
+@media (max-width: 390px) {
+  .status { display: none; }
+}
