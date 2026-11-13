@@ -98,6 +98,7 @@ pub fn router(state: AppState, web_dir: Option<&FsPath>) -> Router {
         .route("/proposals/{id}/approve", post(approve_proposal))
         .route("/proposals/{id}/reject", post(reject_proposal))
         .route("/settings/llm", get(llm_settings).put(update_llm_settings))
+        .route("/settings/llm/models", get(llm_models))
         .route("/usage", get(usage))
         .route("/usage/resume", post(resume_usage))
         .fallback(|| async { AppError::NotFound("API") })
@@ -532,6 +533,20 @@ struct UpdateLlmSettings {
     model: Option<String>,
     monthly_token_limit: Option<i64>,
     warn_percent: Option<i64>,
+}
+
+async fn llm_models(State(s): State<AppState>) -> Result<Json<Vec<crate::llm::LlmModel>>> {
+    let api_key = {
+        let store = s.store();
+        match &s.env_api_key {
+            Some(key) => key.to_string(),
+            None => store.stored_api_key()?.ok_or_else(|| {
+                AppError::Invalid("モデル一覧を取得するには Gemini API キーを設定してください".into())
+            })?,
+        }
+    };
+    let models = s.provider.list_models(&api_key).await.map_err(|e| AppError::Llm(e.0))?;
+    Ok(Json(models))
 }
 
 async fn llm_settings(State(s): State<AppState>) -> Result<Json<LlmSettings>> {

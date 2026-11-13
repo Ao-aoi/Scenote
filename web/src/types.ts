@@ -159,6 +159,11 @@ export interface UsageStatus {
   by_model: { provider: string; model: string; requests: number; input_tokens: number; output_tokens: number }[];
 }
 
+export interface LlmModel {
+  id: string;
+  display_name: string;
+}
+
 export interface LlmSettings {
   provider: string;
   model: string;

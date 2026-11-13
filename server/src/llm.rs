@@ -34,6 +34,15 @@ pub struct LlmResponse {
     pub output_tokens: i64,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LlmModel {
+    pub id: String,
+    pub display_name: String,
+}
+
+pub type LlmModelsFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Vec<LlmModel>, LlmError>> + Send + 'a>>;
+
 /// 呼び出しの失敗。メッセージはユーザーへ表示するため、API キーなどの秘密を含めない。
 #[derive(Debug, Clone)]
 pub struct LlmError(pub String);
@@ -45,6 +54,11 @@ pub trait LlmProvider: Send + Sync {
     fn name(&self) -> &'static str;
 
     fn generate<'a>(&'a self, model: &'a str, api_key: &'a str, request: &'a LlmRequest) -> LlmFuture<'a>;
+
+    /// API キーで利用可能な generateContent 対応モデルを取得する。
+    fn list_models<'a>(&'a self, _api_key: &'a str) -> LlmModelsFuture<'a> {
+        Box::pin(async { Err(LlmError("このプロバイダーはモデル一覧の取得に対応していません".into())) })
+    }
 }
 
 /// Gemini API（generateContent）。
@@ -146,6 +160,58 @@ pub(crate) fn gemini_error_message(status: u16, body: &Value) -> String {
 }
 
 impl LlmProvider for GeminiProvider {
+    fn list_models<'a>(&'a self, api_key: &'a str) -> LlmModelsFuture<'a> {
+        Box::pin(async move {
+            let mut page_token: Option<String> = None;
+            let mut seen_tokens = std::collections::HashSet::new();
+            let mut models: Vec<LlmModel> = Vec::new();
+            for _ in 0..20 {
+                let mut request = self.client
+                    .get(format!("{}/models", self.base_url))
+                    .header("x-goog-api-key", api_key)
+                    .query(&[("pageSize", "1000")]);
+                if let Some(token) = page_token.as_deref() {
+                    request = request.query(&[("pageToken", token)]);
+                }
+                let response = request.send().await.map_err(|_| {
+                    LlmError("Gemini API のモデル一覧を取得できません。ネットワーク接続を確認してください".into())
+                })?;
+                let status = response.status().as_u16();
+                let body: Value = response.json().await.unwrap_or(Value::Null);
+                if !(200..300).contains(&status) {
+                    return Err(LlmError(gemini_error_message(status, &body)));
+                }
+                let entries = body["models"].as_array().ok_or_else(|| {
+                    LlmError("Gemini API から不正なモデル一覧が返されました".into())
+                })?;
+                for entry in entries {
+                    let supports_generation = entry["supportedGenerationMethods"]
+                        .as_array()
+                        .is_some_and(|methods| methods.iter().any(|m| m.as_str() == Some("generateContent")));
+                    let Some(name) = entry["name"].as_str().and_then(|n| n.strip_prefix("models/")) else {
+                        continue;
+                    };
+                    if !supports_generation
+                        || name.is_empty()
+                        || !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_'))
+                        || models.iter().any(|m| m.id == name)
+                    {
+                        continue;
+                    }
+                    let display_name = entry["displayName"].as_str().filter(|s| !s.trim().is_empty())
+                        .unwrap_or(name).to_string();
+                    models.push(LlmModel { id: name.to_string(), display_name });
+                }
+                let next = body["nextPageToken"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+                match next {
+                    Some(token) if seen_tokens.insert(token.clone()) => page_token = Some(token),
+                    _ => return Ok(models),
+                }
+            }
+            Err(LlmError("Gemini API のモデル一覧がページ数の上限を超えました".into()))
+        })
+    }
+
     fn name(&self) -> &'static str {
         "gemini"
     }
