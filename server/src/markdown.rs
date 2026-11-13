@@ -8,7 +8,7 @@
 
 use crate::model::{
     is_valid_kind, is_valid_speaker, ElementContent, KIND_CHARACTER_ACTION, KIND_CHOICE,
-    KIND_DIALOGUE, KIND_DIRECTION, KIND_NARRATION,
+    KIND_DIALOGUE, KIND_DIRECTION, KIND_NARRATION, KIND_TRANSITION, KIND_VARIABLE_CHANGE,
 };
 
 /// 場面内の要素列を Markdown にする。
@@ -216,6 +216,8 @@ fn label_for_kind(kind: &str) -> Option<&'static str> {
         KIND_CHARACTER_ACTION => Some("動作"),
         KIND_DIRECTION => Some("演出"),
         KIND_CHOICE => Some("選択肢"),
+        KIND_TRANSITION => Some("遷移"),
+        KIND_VARIABLE_CHANGE => Some("変数"),
         _ => None,
     }
 }
@@ -227,6 +229,8 @@ fn kind_for_label(label: &str) -> Option<&'static str> {
         "動作" => Some(KIND_CHARACTER_ACTION),
         "演出" => Some(KIND_DIRECTION),
         "選択肢" => Some(KIND_CHOICE),
+        "遷移" => Some(KIND_TRANSITION),
+        "変数" => Some(KIND_VARIABLE_CHANGE),
         _ => None,
     }
 }

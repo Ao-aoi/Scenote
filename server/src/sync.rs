@@ -52,6 +52,7 @@ pub fn scopes_for(path: &str) -> Vec<&'static str> {
         ("projects", "chats") | ("chats", _) => vec!["chat"],
         ("projects", "preferences") | ("preferences", _) => vec!["prefs"],
         ("projects", "snapshots") => vec!["snapshots"],
+        ("projects", "variables") | ("variables", _) => vec!["structure"],
         ("snapshots", _) => vec!["snapshots", "tree", "scene", "files"],
         // 提案の承認は、場面・ファイル・チャットのすべてに影響しうる。
         ("proposals", _) => vec!["chat", "scene", "files", "history"],
@@ -204,6 +205,7 @@ mod tests {
         assert_eq!(scopes_for("/api/proposals/p/approve"), ["chat", "scene", "files", "history"]);
         assert_eq!(scopes_for("/api/snapshots/s/restore"), ["snapshots", "tree", "scene", "files"]);
         assert_eq!(scopes_for("/api/projects"), ["tree", "projects"]);
+        assert_eq!(scopes_for("/api/projects/p/variables"), ["structure"]);
         assert!(scopes_for("/api/auth/pair").is_empty());
     }
 }

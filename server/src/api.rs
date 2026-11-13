@@ -21,6 +21,7 @@ use crate::history::{CompareItem, HistoryEntry, SnapshotInfo, SNAPSHOT_MANUAL};
 use crate::llm::LlmProvider;
 use crate::preferences::{self, AnalysisResult, Profile, Rule, Suggestion};
 use crate::store::{ElementPatch, ProjectPatch, Store};
+use crate::structure::{Structure, Variable};
 use crate::store_ai::{
     Chat, ChatDetail, ChatPatch, FilePatch, LlmSettings, Proposal, ReferenceFile, UsageStatus,
 };
@@ -147,6 +148,9 @@ pub fn router(state: AppState, web_dir: Option<&FsPath>) -> Router {
         .route("/preferences/suggestions/{id}/approve", post(approve_suggestion))
         .route("/preferences/suggestions/{id}/reject", post(reject_suggestion))
         .route("/settings/preferences", put(update_preference_settings))
+        .route("/projects/{id}/variables", get(list_variables).post(create_variable))
+        .route("/variables/{id}", patch(update_variable).delete(delete_variable))
+        .route("/projects/{id}/structure", get(project_structure))
         .route("/usage", get(usage))
         .route("/usage/resume", post(resume_usage))
         .fallback(|| async { AppError::NotFound("API") })
@@ -316,6 +320,7 @@ struct UpdateElement {
     kind: Option<String>,
     speaker: Option<String>,
     body: Option<String>,
+    attrs: Option<Value>,
 }
 
 /// 要素の変更結果。場面のリビジョンも進むため、併せて返す。
@@ -343,6 +348,7 @@ async fn update_element(
         kind: req.kind,
         speaker: req.speaker,
         body: req.body,
+        attrs: req.attrs,
     };
     let mut store = s.store();
     let element = store.update_element(&id, req.base_revision, patch)?;
@@ -909,4 +915,62 @@ async fn delete_device(State(s): State<AppState>, Path(id): Path<String>) -> Res
     // 接続中の通知用 WebSocket も切断する。
     let _ = s.events.send(sync::ChangeEvent { kind: "device_revoked", scopes: vec![], client: None, device_id: Some(id) });
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ---- 変数・構造（Phase 5） ----------------------------------------------
+
+#[derive(Deserialize)]
+struct VariableBody {
+    name: String,
+    var_type: String,
+    #[serde(default)]
+    initial: String,
+    #[serde(default)]
+    description: String,
+}
+
+#[derive(Deserialize)]
+struct UpdateVariableBody {
+    name: Option<String>,
+    var_type: Option<String>,
+    initial: Option<String>,
+    description: Option<String>,
+}
+
+async fn list_variables(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<Vec<Variable>>> {
+    let store = s.store();
+    store.get_project(&id)?;
+    Ok(Json(store.list_variables(&id)?))
+}
+
+async fn create_variable(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<VariableBody>,
+) -> Result<(StatusCode, Json<Variable>)> {
+    let v = s.store().create_variable(&id, &req.name, &req.var_type, &req.initial, &req.description)?;
+    Ok((StatusCode::CREATED, Json(v)))
+}
+
+async fn update_variable(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateVariableBody>,
+) -> Result<Json<Variable>> {
+    Ok(Json(s.store().update_variable(
+        &id,
+        req.name.as_deref(),
+        req.var_type.as_deref(),
+        req.initial.as_deref(),
+        req.description.as_deref(),
+    )?))
+}
+
+async fn delete_variable(State(s): State<AppState>, Path(id): Path<String>) -> Result<StatusCode> {
+    s.store().delete_variable(&id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn project_structure(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<Structure>> {
+    Ok(Json(s.store().structure(&id)?))
 }

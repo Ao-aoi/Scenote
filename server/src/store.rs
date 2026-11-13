@@ -33,6 +33,8 @@ pub struct ElementPatch {
     pub kind: Option<String>,
     pub speaker: Option<String>,
     pub body: Option<String>,
+    /// 分岐先・条件などの構造データ（種類ごとに検証する）。
+    pub attrs: Option<serde_json::Value>,
 }
 
 pub(crate) fn new_id() -> String {
@@ -193,6 +195,12 @@ impl Store {
             let tx = self.conn.transaction()?;
             tx.execute_batch(include_str!("schema_v4.sql"))?;
             tx.pragma_update(None, "user_version", 4)?;
+            tx.commit()?;
+        }
+        if version < 5 {
+            let tx = self.conn.transaction()?;
+            tx.execute_batch(include_str!("schema_v5.sql"))?;
+            tx.pragma_update(None, "user_version", 5)?;
             tx.commit()?;
         }
         Ok(())
@@ -479,10 +487,30 @@ impl Store {
             speaker: patch.speaker.unwrap_or(current.speaker),
             body: patch.body.unwrap_or(current.body),
         })?;
+        let attrs = match patch.attrs {
+            Some(a) => Some(self.clean_attrs(&current.scene_id, &content.kind, a)?),
+            None => None,
+        };
         let tx = self.conn.transaction()?;
         update_element_content(&tx, id, &content, origin)?;
+        if let Some(a) = &attrs {
+            tx.execute("UPDATE elements SET attrs = ?2 WHERE id = ?1", params![id, a.to_string()])?;
+        }
         record_element(&tx, &current.scene_id, id, ACTION_UPDATE, ACTOR_HUMAN, Some(&previous), Some(&content), None)?;
         touch_scene(&tx, &current.scene_id)?;
+        tx.commit()?;
+        self.get_element(id)
+    }
+
+    /// 要素の構造データだけを置き換える（検証済みの値を渡す）。
+    pub fn set_element_attrs(&mut self, id: &str, attrs: serde_json::Value) -> Result<Element> {
+        let e = self.get_element(id)?;
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            &format!("UPDATE elements SET attrs = ?2, revision = revision + 1, updated_at = {NOW} WHERE id = ?1"),
+            params![id, attrs.to_string()],
+        )?;
+        touch_scene(&tx, &e.scene_id)?;
         tx.commit()?;
         self.get_element(id)
     }

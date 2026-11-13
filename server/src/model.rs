@@ -6,21 +6,27 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// DB スキーマおよび JSON エクスポート形式のバージョン。
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 pub const KIND_DIALOGUE: &str = "Dialogue";
 pub const KIND_NARRATION: &str = "Narration";
 pub const KIND_CHARACTER_ACTION: &str = "CharacterAction";
 pub const KIND_DIRECTION: &str = "Direction";
 pub const KIND_CHOICE: &str = "Choice";
+/// 場面の遷移（分岐先への移動）。`attrs`: `{ "target": 場面ID, "condition": 条件式 }`
+pub const KIND_TRANSITION: &str = "Transition";
+/// 変数の変更。`attrs`: `{ "effects": 変更式 }`
+pub const KIND_VARIABLE_CHANGE: &str = "VariableChange";
 
 /// 初期版で UI から選択できる要素の種類。
-pub const BASIC_KINDS: [&str; 5] = [
+pub const BASIC_KINDS: [&str; 7] = [
     KIND_NARRATION,
     KIND_DIALOGUE,
     KIND_CHARACTER_ACTION,
     KIND_DIRECTION,
     KIND_CHOICE,
+    KIND_TRANSITION,
+    KIND_VARIABLE_CHANGE,
 ];
 
 /// プロジェクト作成時に選択できるテンプレート（複数選択可）。

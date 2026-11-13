@@ -162,5 +162,53 @@ async fn errors_are_reported_as_json() {
 
     let (status, meta) = call_json(&app, "GET", "/api/meta", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(meta["element_kinds"].as_array().unwrap().len(), 5);
+    assert_eq!(meta["element_kinds"].as_array().unwrap().len(), 7);
+}
+
+#[tokio::test]
+async fn branches_variables_and_structure() {
+    let app = app();
+    let (_, project) = call_json(&app, "POST", "/api/projects", Some(json!({ "name": "分岐" }))).await;
+    let pid = project["id"].as_str().unwrap();
+    let (_, tree) = call_json(&app, "GET", &format!("/api/projects/{pid}"), None).await;
+    let chapter = tree["chapters"][0]["id"].as_str().unwrap();
+    let s1 = tree["chapters"][0]["scenes"][0]["id"].as_str().unwrap().to_string();
+    let (_, s2) = call_json(&app, "POST", &format!("/api/chapters/{chapter}/scenes"), Some(json!({ "title": "森" }))).await;
+    let s2 = s2["id"].as_str().unwrap().to_string();
+
+    let (status, var) = call_json(&app, "POST", &format!("/api/projects/{pid}/variables"),
+        Some(json!({ "name": "勇気", "var_type": "number", "initial": "0" }))).await;
+    assert_eq!(status, StatusCode::CREATED, "{var}");
+    let (status, _) = call_json(&app, "POST", &format!("/api/projects/{pid}/variables"),
+        Some(json!({ "name": "勇気", "var_type": "number" }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (_, choice) = call_json(&app, "POST", &format!("/api/scenes/{s1}/elements"),
+        Some(json!({ "kind": "Choice", "body": "どうする？" }))).await;
+    let id = choice["element"]["id"].as_str().unwrap();
+    let (status, updated) = call_json(&app, "PATCH", &format!("/api/elements/{id}"), Some(json!({
+        "base_revision": 1,
+        "attrs": { "options": [ { "text": "進む", "target": s2, "effects": "勇気 += 1" }, { "text": "戻る", "condition": "勇気 >= 3" } ] }
+    }))).await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["element"]["attrs"]["options"][0]["target"], s2.as_str());
+    assert_eq!(updated["element"]["attrs"]["options"][1]["target"], Value::Null);
+    // 存在しない場面へは移動できない。
+    let (status, _) = call_json(&app, "PATCH", &format!("/api/elements/{id}"), Some(json!({
+        "base_revision": 2, "attrs": { "options": [ { "text": "x", "target": "nope" } ] }
+    }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (status, st) = call_json(&app, "GET", &format!("/api/projects/{pid}/structure"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let kinds: Vec<&str> = st["edges"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert!(kinds.contains(&"choice") && kinds.contains(&"next"));
+    assert_eq!(st["variable_usage"][0]["written_in"][0], "場面1");
+    // 分岐データは Markdown の編集で失われず、JSON 書き出しに含まれる。
+    let (_, md) = call_json(&app, "GET", &format!("/api/scenes/{s1}/markdown"), None).await;
+    call_json(&app, "PUT", &format!("/api/scenes/{s1}/markdown"),
+        Some(json!({ "base_revision": md["revision"], "markdown": "前置き\n\n[選択肢] どうする？\n" }))).await;
+    let (_, exported) = call_json(&app, "GET", &format!("/api/projects/{pid}/export/json"), None).await;
+    let elements = exported["chapters"][0]["scenes"][0]["elements"].as_array().unwrap();
+    assert_eq!(elements[1]["attrs"]["options"][0]["text"], "進む");
 }

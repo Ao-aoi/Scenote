@@ -173,6 +173,8 @@ fn kind_label(kind: &str) -> &str {
         KIND_CHARACTER_ACTION => "動作",
         KIND_DIRECTION => "演出",
         KIND_CHOICE => "選択肢",
+        KIND_TRANSITION => "遷移",
+        KIND_VARIABLE_CHANGE => "変数の変更",
         other => other,
     }
 }
@@ -184,6 +186,7 @@ pub fn build_context(
     files: &[ReferenceFile],
     chat: &Chat,
     preferences: &str,
+    variables: &[crate::structure::Variable],
     request: &str,
 ) -> String {
     let mut out = String::new();
@@ -209,14 +212,49 @@ pub fn build_context(
             if scene.elements.is_empty() {
                 out.push_str("（まだ要素がありません）\n");
             }
+            // 分岐の移動先は、ID ではなく場面の題名で伝える。
+            let title_of = |id: &str| {
+                tree.chapters
+                    .iter()
+                    .flat_map(|c| c.scenes.iter())
+                    .find(|s| s.id == id)
+                    .map(|s| s.title.clone())
+                    .unwrap_or_else(|| "（削除された場面）".into())
+            };
             for (i, e) in scene.elements.iter().enumerate() {
-                let line = json!({
+                let mut line = json!({
                     "ref": format!("e{}", i + 1),
                     "kind": e.kind,
                     "種類": kind_label(&e.kind),
                     "speaker": e.speaker,
                     "body": e.body,
                 });
+                let branch = match e.kind.as_str() {
+                    KIND_CHOICE => e.attrs.get("options").and_then(Value::as_array).map(|opts| {
+                        json!(opts
+                            .iter()
+                            .map(|o| {
+                                let mut o = o.clone();
+                                if let Some(t) = o.get("target").and_then(Value::as_str).map(str::to_string) {
+                                    o["target"] = json!(title_of(&t));
+                                }
+                                o
+                            })
+                            .collect::<Vec<_>>())
+                    }),
+                    KIND_TRANSITION | KIND_VARIABLE_CHANGE => {
+                        let mut a = e.attrs.clone();
+                        if let Some(t) = a.get("target").and_then(Value::as_str).map(str::to_string) {
+                            a["target"] = json!(title_of(&t));
+                        }
+                        Some(a)
+                    }
+                    _ => None,
+                };
+                if let Some(b) = branch {
+                    // 分岐・条件の設定は表示のための参考情報。提案で変更されることはない。
+                    line["分岐（参考・変更不可）"] = b;
+                }
                 out.push_str(&line.to_string());
                 out.push('\n');
             }
@@ -229,6 +267,13 @@ pub fn build_context(
     }
     for (i, file) in files.iter().enumerate() {
         out.push_str(&format!("## [f{}] {}\n{}\n\n", i + 1, file.name, file.content));
+    }
+    if !variables.is_empty() {
+        out.push_str("\n# 変数（フラグ・数値など）\n");
+        for v in variables {
+            let desc = if v.description.is_empty() { String::new() } else { format!(" — {}", v.description) };
+            out.push_str(&format!("- {}（{}、初期値 {}）{desc}\n", v.name, v.var_type.label(), if v.initial.is_empty() { "なし" } else { &v.initial }));
+        }
     }
     if !preferences.is_empty() {
         out.push('\n');
@@ -446,7 +491,7 @@ pub async fn send_message(
     }
 
     // 1. 必要な情報をまとめて読み出す（LLM 呼び出し中はロックを保持しない）。
-    let (chat, tree, scene, fixed, candidates, history, model, api_key, preferences) = {
+    let (chat, tree, scene, fixed, candidates, history, model, api_key, preferences, variables) = {
         let s = lock(store);
         s.ensure_llm_allowed()?;
         let chat = s.get_chat(chat_id)?;
@@ -479,7 +524,8 @@ pub async fn send_message(
         );
         let history = s.list_messages(chat_id)?;
         let preferences = s.preference_prompt(&chat.project_id)?;
-        (chat, tree, scene, fixed, candidates, history, s.llm_model()?, api_key, preferences)
+        let variables = s.list_variables(&chat.project_id)?;
+        (chat, tree, scene, fixed, candidates, history, s.llm_model()?, api_key, preferences, variables)
     };
 
     // 2. 参照ファイルの自動選択。候補が少量なら LLM を呼ばずにすべて参照する。
@@ -519,7 +565,7 @@ pub async fn send_message(
         .collect();
     messages.push(LlmMessage {
         role: Role::User,
-        text: build_context(&tree, scene.as_ref(), &files, &chat, &preferences, &content),
+        text: build_context(&tree, scene.as_ref(), &files, &chat, &preferences, &variables, &content),
     });
     let llm_request = LlmRequest {
         system: SYSTEM_PROMPT.to_string(),
