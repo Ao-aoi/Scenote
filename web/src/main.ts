@@ -48,12 +48,20 @@ const historyHost = h("div", { class: "editor-host", hidden: true });
 const prefsHost = h("div", { class: "editor-host", hidden: true });
 const structureHost = h("div", { class: "editor-host structure-host", hidden: true });
 const main = h("main", { class: "main" }, sceneHost, fileHost, historyHost, prefsHost, structureHost);
-const historyButton = h("button", { type: "button" }, "履歴");
+function topbarAction(label: string, symbol: string): HTMLButtonElement {
+  return h(
+    "button",
+    { type: "button", class: "topbar-action", "aria-label": label, title: label },
+    h("span", { class: "topbar-icon", "aria-hidden": "true" }, symbol),
+    h("span", { class: "topbar-label" }, label),
+  );
+}
+const historyButton = topbarAction("履歴", "◷");
 const chatHost = h("aside", { class: "chat", "aria-label": "AI チャット" });
 const chatToggle = h("button", { type: "button", "aria-pressed": "true", "aria-label": "AI チャットを開閉" }, "AI");
-const navToggle = h("button", { type: "button", class: "icon", "aria-label": "章と場面の一覧を開閉" }, "☰");
-const settingsButton = h("button", { type: "button" }, "設定");
-const exportButton = h("button", { type: "button" }, "書き出し");
+const navToggle = h("button", { type: "button", class: "icon", "aria-label": "章と場面の一覧を開閉", title: "章と場面" }, "☰");
+const settingsButton = topbarAction("設定", "⚙");
+const exportButton = topbarAction("書き出し", "⇩");
 const shell = h(
   "div", { class: "shell" },
   h(
