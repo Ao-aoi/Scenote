@@ -97,6 +97,10 @@ button.icon { min-width: 36px; padding: 4px; border-color: transparent; backgrou
   background: var(--surface);
 }
 .brand { font-weight: 700; }
+.topbar button { white-space: nowrap; flex: none; }
+.ico { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.icon-button { display: inline-flex; align-items: center; gap: 6px; }
+button.icon { display: inline-flex; align-items: center; justify-content: center; }
 .project-select { flex: 0 1 240px; min-width: 0; min-height: 36px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); padding: 0 8px; }
 .status { margin-left: auto; font-size: 0.85rem; color: var(--muted); white-space: nowrap; }
 .status-error, .status-conflict { color: var(--danger); font-weight: 600; }
@@ -267,6 +271,10 @@ button.icon { min-width: 36px; padding: 4px; border-color: transparent; backgrou
 .toasts { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 30; display: flex; flex-direction: column; gap: 8px; width: min(520px, calc(100vw - 24px)); }
 .toast { background: var(--text); color: var(--bg); border-radius: 8px; padding: 10px 14px; font-size: 0.9rem; }
 .toast-error { background: var(--danger); color: #fff; }
+.snackbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.snackbar-text { flex: 1 1 200px; }
+.snackbar button { min-height: 32px; border-color: transparent; background: rgba(128, 128, 128, 0.35); color: inherit; }
+.snackbar button.primary { background: var(--accent); color: var(--accent-text); }
 
 /* ---- AI チャット ---- */
 .muted { color: var(--muted); }
@@ -478,6 +486,11 @@ button.link { border: none; background: none; color: var(--accent); padding: 0; 
   .nav { display: none; position: absolute; inset: 0 auto 0 0; z-index: 10; width: min(300px, 85vw); box-shadow: 4px 0 16px rgba(0, 0, 0, 0.2); }
   .shell.nav-open .nav { display: block; }
   .brand { display: none; }
+  /* 幅が足りない画面では、上部のボタンをアイコンだけにする（意味は title / aria-label で伝える）。 */
+  .icon-button .icon-label { display: none; }
+  .icon-button { min-width: 40px; justify-content: center; padding: 4px 8px; }
+  .topbar { gap: 6px; padding-left: 8px; padding-right: 8px; }
+  .project-select { flex: 1 1 100px; }
   .chat { position: absolute; inset: 0 0 0 auto; z-index: 9; width: min(460px, 100vw); box-shadow: -4px 0 16px rgba(0, 0, 0, 0.2); }
   .status { font-size: 0.75rem; }
 }
