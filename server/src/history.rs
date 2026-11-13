@@ -203,8 +203,8 @@ pub(crate) fn record(tx: &Transaction, change: Change) -> Result<()> {
     if change.action == ACTION_UPDATE && change.actor == ACTOR_HUMAN && change.proposal_id.is_none() {
         let latest: Option<(i64, String, String, String, Option<String>)> = tx
             .query_row(
-                &"SELECT seq, target_id, action, actor, proposal_id FROM history
-                     WHERE project_id = ?1 ORDER BY seq DESC LIMIT 1".to_string(),
+                "SELECT seq, target_id, action, actor, proposal_id FROM history
+                     WHERE project_id = ?1 ORDER BY seq DESC LIMIT 1",
                 [change.project_id],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
