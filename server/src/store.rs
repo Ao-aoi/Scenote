@@ -203,6 +203,12 @@ impl Store {
             tx.pragma_update(None, "user_version", 5)?;
             tx.commit()?;
         }
+        if version < 6 {
+            let tx = self.conn.transaction()?;
+            tx.execute_batch(include_str!("schema_v6.sql"))?;
+            tx.pragma_update(None, "user_version", 6)?;
+            tx.commit()?;
+        }
         Ok(())
     }
 

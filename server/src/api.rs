@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::auth::{self, Device, Pairing, Principal};
+use crate::characters::{self, Character, CreateCharacter, UpdateCharacter};
 use crate::error::{AppError, Result};
 use crate::sync::{self, EventSender};
 use crate::model::*;
@@ -148,6 +149,8 @@ pub fn router(state: AppState, web_dir: Option<&FsPath>) -> Router {
         .route("/preferences/suggestions/{id}/approve", post(approve_suggestion))
         .route("/preferences/suggestions/{id}/reject", post(reject_suggestion))
         .route("/settings/preferences", put(update_preference_settings))
+        .route("/projects/{id}/characters", get(list_characters).post(create_character))
+        .route("/characters/{id}", get(get_character).patch(update_character).delete(delete_character))
         .route("/projects/{id}/variables", get(list_variables).post(create_variable))
         .route("/variables/{id}", patch(update_variable).delete(delete_variable))
         .route("/projects/{id}/structure", get(project_structure))
@@ -226,6 +229,37 @@ async fn update_project(
 
 async fn delete_project(State(s): State<AppState>, Path(id): Path<String>) -> Result<StatusCode> {
     s.store().delete_project(&id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ---- キャラクター -----------------------------------------------------
+
+async fn list_characters(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<Vec<Character>>> {
+    let store = s.store();
+    store.get_project(&id)?;
+    Ok(Json(characters::list(&store, &id)?))
+}
+
+async fn create_character(
+    State(s): State<AppState>, Path(id): Path<String>, Json(req): Json<CreateCharacter>,
+) -> Result<(StatusCode, Json<Character>)> {
+    let mut store = s.store();
+    let character = characters::create(&mut store, &id, req)?;
+    Ok((StatusCode::CREATED, Json(character)))
+}
+
+async fn get_character(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<Character>> {
+    Ok(Json(characters::get(&s.store(), &id)?))
+}
+
+async fn update_character(
+    State(s): State<AppState>, Path(id): Path<String>, Json(req): Json<UpdateCharacter>,
+) -> Result<Json<Character>> {
+    Ok(Json(characters::update(&mut s.store(), &id, req)?))
+}
+
+async fn delete_character(State(s): State<AppState>, Path(id): Path<String>) -> Result<StatusCode> {
+    characters::delete(&mut s.store(), &id)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
