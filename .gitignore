@@ -1,0 +1,9 @@
+# Rust
+/server/target/
+
+# Web
+/web/node_modules/
+/web/dist/
+
+# ローカルデータ（シナリオ DB）
+/data/
