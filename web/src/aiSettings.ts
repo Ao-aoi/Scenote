@@ -2,6 +2,7 @@
 
 import { api } from "./api";
 import { h, openDialog, toast } from "./dom";
+import type { LlmModel } from "./types";
 
 interface FormValue {
   api_key?: string;
@@ -13,6 +14,7 @@ interface FormValue {
 /** 設定ダイアログを開く。保存した場合は true。 */
 export async function openAiSettings(): Promise<boolean> {
   const [settings, usage] = await Promise.all([api.getLlmSettings(), api.getUsage()]);
+  let models: LlmModel[] = [];
   const value = await openDialog<FormValue>((close) => {
     const key = h("input", {
       type: "password",
@@ -21,7 +23,50 @@ export async function openAiSettings(): Promise<boolean> {
       placeholder: settings.has_api_key ? "設定済み（変更する場合のみ入力）" : "Gemini API キーを入力",
     });
     const removeKey = h("input", { type: "checkbox" });
-    const model = h("input", { type: "text", class: "field", value: settings.model, required: true, maxLength: 100 });
+    const model = h("select", { class: "field", required: true });
+    const modelStatus = h("p", { class: "hint" });
+    const refreshModels = h("button", { type: "button" }, "モデル一覧を更新");
+    let loading = false;
+    const renderModels = (error?: string) => {
+      const current = model.value || settings.model;
+      const choices = new Map<string, string>();
+      choices.set("gemini-flash-latest", "Gemini Flash Latest（デフォルト）");
+      for (const item of models) choices.set(item.id, item.display_name);
+      if (!choices.has(settings.model)) choices.set(settings.model, settings.model + "（現在の設定）");
+      model.replaceChildren(...[...choices].map(([id, label]) =>
+        h("option", { value: id, selected: id === current }, label),
+      ));
+      modelStatus.textContent = loading
+        ? "モデル一覧を取得しています…"
+        : error
+          ? error
+          : models.length
+        ? models.length + " 個の generateContent 対応モデルを取得しました。"
+        : settings.has_api_key
+          ? "モデル一覧を取得できませんでした。APIキー・通信状態を確認して再取得してください。"
+          : "APIキーを設定すると、利用可能なモデル一覧を取得できます。";
+    };
+    // ダイアログはすぐに開き、一覧は裏で取得する（通信が遅くても設定画面を待たせない）。
+    const loadModels = async () => {
+      if (!settings.has_api_key || loading) return;
+      loading = true;
+      refreshModels.disabled = true;
+      renderModels();
+      let error: string | undefined;
+      try {
+        models = await api.getGeminiModels();
+      } catch (e) {
+        error = e instanceof Error ? e.message : "モデル一覧を取得できませんでした。";
+      } finally {
+        loading = false;
+        refreshModels.disabled = !settings.has_api_key;
+      }
+      renderModels(error);
+    };
+    refreshModels.disabled = !settings.has_api_key;
+    refreshModels.addEventListener("click", () => void loadModels());
+    renderModels();
+    void loadModels();
     const limit = h("input", {
       type: "number",
       class: "field",
@@ -70,7 +115,8 @@ export async function openAiSettings(): Promise<boolean> {
         key,
       ),
       settings.has_api_key ? h("label", { class: "check" }, removeKey, "保存済みの API キーを削除する") : null,
-      h("label", { class: "form-row" }, h("span", {}, "モデル名"), model),
+      h("label", { class: "form-row" }, h("span", {}, "Gemini モデル"), model),
+      h("div", { class: "form-row" }, refreshModels, modelStatus),
       h("label", { class: "form-row" }, h("span", {}, "月あたりのトークン上限（0 で無制限。到達すると AI の利用を自動停止）"), limit),
       h("label", { class: "form-row" }, h("span", {}, "警告を出す使用率（%）"), warn),
       h("h3", {}, `今月の使用量（${usage.month}、UTC）`),

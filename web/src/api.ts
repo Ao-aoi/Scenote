@@ -6,6 +6,7 @@ import type {
   ElementResult,
   Exchange,
   LlmSettings,
+  LlmModel,
   Meta,
   Project,
   ProjectTree,
@@ -132,6 +133,7 @@ export const api = {
   rejectProposal: (id: string, reason: string) => request<Proposal>("POST", `/proposals/${id}/reject`, { reason }),
 
   getLlmSettings: () => request<LlmSettings>("GET", "/settings/llm"),
+  getGeminiModels: () => request<LlmModel[]>("GET", "/settings/llm/models"),
   updateLlmSettings: (patch: { api_key?: string; model?: string; monthly_token_limit?: number; warn_percent?: number }) =>
     request<LlmSettings>("PUT", "/settings/llm", patch),
   getUsage: () => request<UsageStatus>("GET", "/usage"),
