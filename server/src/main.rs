@@ -5,6 +5,7 @@ use std::sync::Arc;
 use scenote::api::{self, AppState};
 use scenote::llm::GeminiProvider;
 use scenote::store::Store;
+use qrcode::{render::unicode, QrCode};
 
 fn env_or(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
@@ -63,6 +64,17 @@ async fn main() {
     } else {
         for url in &lan_urls {
             println!("同じ LAN の端末からの接続先: {url}");
+            if !url.contains('<') {
+                match QrCode::new(url.as_bytes()) {
+                    Ok(code) => {
+                        println!("iPad のカメラで読み取ってアクセスできます:");
+                        println!("{}", code.render::<unicode::Dense1x2>().quiet_zone(true).build());
+                    }
+                    Err(error) => eprintln!("接続先 URL の QR コードを生成できませんでした: {error}"),
+                }
+            } else {
+                println!("QR コードを表示できません。PC の LAN 側 IP アドレスを確認してください。");
+            }
         }
         println!("端末を接続するには、PC の画面の「設定」→「端末の接続」でペアリングコードを発行してください。");
     }
