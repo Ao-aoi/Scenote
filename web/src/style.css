@@ -51,6 +51,13 @@
 * { box-sizing: border-box; }
 
 html, body, #app { height: 100%; margin: 0; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+/* iPad の Safari が入力欄にフォーカスしたときに拡大しないよう、16px 以上にする。 */
+@media (pointer: coarse) {
+  input, select, textarea, .body, .chat-input { font-size: 16px; }
+  .tool, button.icon { min-width: 44px; min-height: 40px; }
+  .block-tools { opacity: 1; }
+}
 
 body { background: var(--bg); color: var(--text); }
 
@@ -353,6 +360,20 @@ button.link { border: none; background: none; color: var(--accent); padding: 0; 
 .pref-rule-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .edit-body { min-height: 160px; resize: vertical; }
 
+/* ---- 端末の接続 ---- */
+.pair-screen { min-height: 100%; display: flex; align-items: center; justify-content: center; padding: 24px 16px; }
+.pair-card { width: min(440px, 100%); border: 1px solid var(--border); border-radius: 10px; background: var(--surface); padding: 24px; }
+.pair-card h1 { margin: 0 0 8px; font-size: 1.3rem; }
+.pair-code { font-size: 1.4rem; letter-spacing: 0.15em; text-align: center; }
+.pairing-box:empty { display: none; }
+.pairing-box { margin: 12px 0; padding: 12px; border-radius: 8px; background: var(--bg); text-align: center; }
+.pairing-box p { margin: 4px 0; }
+.pair-url { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-weight: 700; overflow-wrap: anywhere; }
+.pair-code-display { font-size: 2rem; font-weight: 700; letter-spacing: 0.15em; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+.device-list { display: flex; flex-direction: column; gap: 6px; }
+.device { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; }
+.shell.offline .status::after { content: "（同期が切断中）"; color: var(--danger); }
+
 /* ---- モデル選択 ---- */
 .picker { position: relative; }
 .picker-button { display: flex; align-items: center; gap: 8px; text-align: left; }
@@ -377,6 +398,11 @@ button.link { border: none; background: none; color: var(--accent); padding: 0; 
 .picker-option { display: flex; align-items: center; gap: 12px; min-height: 40px; padding: 4px 8px; border-radius: 4px; cursor: pointer; }
 .picker-option.active, .picker-option:hover { background: var(--hover); }
 .picker-option[aria-selected="true"] .picker-label { font-weight: 700; }
+
+/* iPad の横持ちなど中くらいの画面では、チャットを本文の上に重ねて表示する。 */
+@media (max-width: 1100px) and (min-width: 821px) {
+  .chat { position: absolute; inset: 0 0 0 auto; z-index: 9; width: min(440px, 60vw); box-shadow: -4px 0 16px rgba(0, 0, 0, 0.2); }
+}
 
 /* 狭い画面（iPad の縦持ち・Split View など）では一覧を本文の上に重ねて表示する。 */
 @media (max-width: 820px) {

@@ -66,6 +66,23 @@ export class FileEditor {
     return true;
   }
 
+  /** 他の端末で参照ファイルが変更されたときに呼ぶ。編集中・未保存の場合は読み直さない。 */
+  async syncFromRemote(): Promise<void> {
+    const file = this.file;
+    if (!file || this.hasUnsavedChanges()) return;
+    const active = document.activeElement;
+    if (active instanceof Node && this.root.contains(active)) return;
+    let latest: ReferenceFile;
+    try {
+      latest = await api.getFile(file.id);
+    } catch {
+      return;
+    }
+    if (latest.revision !== file.revision && this.file === file && !this.hasUnsavedChanges()) {
+      await this.open(file.id);
+    }
+  }
+
   /** サーバー側で内容が変わった後（AI 提案の承認など）に、表示を最新にする。 */
   async syncFromServer(): Promise<void> {
     const id = this.fileId;

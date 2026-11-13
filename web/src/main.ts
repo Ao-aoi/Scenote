@@ -2,7 +2,9 @@
 
 import "./style.css";
 import { openAiSettings } from "./aiSettings";
-import { api } from "./api";
+import { api, setUnauthenticatedHandler } from "./api";
+import { disconnectThisDevice, openDeviceManager, showPairingScreen } from "./devices";
+import { connectEvents } from "./events";
 import { ChatPanel } from "./chat";
 import { askConfirm, askProject, askText, h, openMenu, toast, type MenuItem } from "./dom";
 import { FileEditor } from "./fileEditor";
@@ -23,6 +25,8 @@ const STATE_LABELS: Record<SaveState, string> = {
 };
 
 let meta: Meta;
+/** この画面が PC 本体で開かれているか、端末（iPad など）か。 */
+let auth = { local: true, deviceName: null as string | null };
 let projects: Project[] = [];
 let tree: ProjectTree | null = null;
 let files: ReferenceFile[] = [];
@@ -114,7 +118,7 @@ const chat = new ChatPanel(chatHost, {
 });
 
 async function showAiSettings(): Promise<void> {
-  if (await openAiSettings()) await chat.refreshUsage();
+  if (await openAiSettings(auth.local)) await chat.refreshUsage();
 }
 
 function setView(next: View): void {
@@ -509,6 +513,9 @@ settingsButton.addEventListener("click", () =>
   openMenu(settingsButton, [
     { label: "プロジェクト設定…", action: () => void run(editProject) },
     { label: "AI 設定・使用量…", action: () => void run(showAiSettings) },
+    auth.local
+      ? { label: "端末の接続…", action: () => void run(openDeviceManager) }
+      : { label: `この端末（${auth.deviceName ?? "端末"}）の接続を解除…`, action: () => void run(disconnectThisDevice) },
     { label: "プロジェクトを削除…", danger: true, action: () => void run(deleteProject) },
   ]),
 );
@@ -542,13 +549,88 @@ window.addEventListener("beforeunload", (e) => {
   }
 });
 
+/** 他の端末での変更を反映する。編集中の内容は上書きしない。 */
+async function applyRemoteChanges(scopes: Set<string>): Promise<void> {
+  if (scopes.has("projects")) await loadProjects();
+  if (!tree) {
+    if (scopes.has("projects") && projects.length) await openProject(projects[0].id);
+    return;
+  }
+  const projectId = tree.project.id;
+  if (!projects.some((p) => p.id === projectId)) {
+    // 開いていたプロジェクトが削除された。
+    toast("開いていたプロジェクトは他の端末で削除されました", "error");
+    await openProject(projects[0]?.id ?? null);
+    return;
+  }
+  if (scopes.has("tree")) {
+    await refreshTree();
+    const ids = allSceneIds();
+    if (editor.sceneId && !ids.includes(editor.sceneId) && !editor.hasUnsavedChanges()) {
+      toast("開いていた場面は他の端末で削除されました");
+      await selectScene(ids[0] ?? null);
+    }
+  }
+  if (scopes.has("scene")) await editor.syncFromRemote();
+  if (scopes.has("files")) {
+    await refreshFiles();
+    await fileEditor.syncFromRemote();
+  }
+  if (scopes.has("chat")) await chat.refreshFromRemote();
+  if (scopes.has("settings")) await chat.refreshUsage();
+  if (view === "history" && (scopes.has("snapshots") || scopes.has("scene") || scopes.has("files") || scopes.has("history"))) {
+    await historyView.open(projectId);
+  }
+  if (view === "prefs" && (scopes.has("prefs") || scopes.has("chat"))) await preferencesView.open(projectId, projects);
+}
+
+let remoteQueue: Set<string> | null = null;
+let remoteRunning = false;
+
+/** 通知が続けて届いた場合はまとめて処理する。 */
+function queueRemoteChanges(scopes: Set<string>): void {
+  remoteQueue = new Set([...(remoteQueue ?? []), ...scopes]);
+  if (remoteRunning) return;
+  remoteRunning = true;
+  window.setTimeout(async () => {
+    while (remoteQueue) {
+      const next = remoteQueue;
+      remoteQueue = null;
+      try {
+        await applyRemoteChanges(next);
+      } catch {
+        // 読み直しに失敗しても、次の通知や操作で再び読み直される。
+      }
+    }
+    remoteRunning = false;
+  }, 300);
+}
+
 async function start(): Promise<void> {
+  const appRoot = document.querySelector<HTMLElement>("#app")!;
+  try {
+    const status = await api.authStatus();
+    if (!status.authenticated) {
+      showPairingScreen(appRoot);
+      return;
+    }
+    auth = { local: status.local, deviceName: status.device_name };
+  } catch (e) {
+    appRoot.replaceChildren(h("div", { class: "empty pair-screen" }, h("p", { class: "error-text" }, e instanceof Error ? e.message : "サーバーに接続できません")));
+    return;
+  }
+  setUnauthenticatedHandler(() => showPairingScreen(appRoot, "この端末の接続が解除されました。もう一度ペアリングしてください。"));
   // 狭い画面ではチャットが本文を覆うため、閉じた状態で始める。
-  if (window.innerWidth <= 820) {
+  if (window.innerWidth <= 1100) {
     shell.classList.add("chat-closed");
     chatToggle.setAttribute("aria-pressed", "false");
   }
-  document.querySelector("#app")!.append(shell);
+  appRoot.append(shell);
+  connectEvents({
+    onChange: queueRemoteChanges,
+    onRevoked: () => showPairingScreen(appRoot, "この端末の接続が PC 側で解除されました。もう一度ペアリングしてください。"),
+    onConnection: (connected) => shell.classList.toggle("offline", !connected),
+  });
   try {
     meta = await api.meta();
     editorOptions.kinds = meta.element_kinds;

@@ -2,6 +2,7 @@
 
 import type {
   AnalysisResult,
+  Device,
   Chat,
   CompareItem,
   HistoryEntry,
@@ -40,13 +41,30 @@ export class ApiError extends Error {
   }
 }
 
+/** この画面の識別子。自分が行った変更の通知を無視するために、すべての要求に付ける。 */
+export const CLIENT_ID = (crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`).replace(/[^\w-]/g, "");
+
+let onUnauthenticated: (() => void) | null = null;
+
+/** 未認証（端末の登録が解除されたなど）を検出したときの処理を登録する。 */
+export function setUnauthenticatedHandler(handler: () => void): void {
+  onUnauthenticated = handler;
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   let response: Response;
   try {
     const payload = body === undefined ? undefined : JSON.stringify(body);
+    const headers: Record<string, string> = {
+      // 他サイトからの送信と区別するためのヘッダー（サーバーは状態を変える要求に必須としている）。
+      "X-Scenote": "1",
+      "X-Scenote-Client": CLIENT_ID,
+    };
+    if (payload !== undefined) headers["Content-Type"] = "application/json";
     response = await fetch(`/api${path}`, {
       method,
-      headers: payload === undefined ? undefined : { "Content-Type": "application/json" },
+      headers,
+      credentials: "same-origin",
       body: payload,
       // ページを離れる直前の自動保存が中断されないようにする（上限 64KB のため小さい要求のみ）。
       keepalive: payload !== undefined && payload.length < 16_000,
@@ -63,6 +81,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     data = undefined;
   }
   if (!response.ok) {
+    if (response.status === 401) onUnauthenticated?.();
     const error = (data as { error?: { code?: string; message?: string; current_revision?: number } } | undefined)?.error;
     throw new ApiError(
       error?.message ?? `サーバーがエラーを返しました (HTTP ${response.status})`,
@@ -180,6 +199,15 @@ export const api = {
   rejectSuggestion: (id: string) => request<PreferenceSuggestion>("POST", `/preferences/suggestions/${id}/reject`, {}),
   updatePreferenceSettings: (patch: { auto_update?: boolean; include_direct_edits?: boolean }) =>
     request<{ auto_update: boolean; include_direct_edits: boolean }>("PUT", "/settings/preferences", patch),
+
+  authStatus: () =>
+    request<{ authenticated: boolean; local: boolean; device_name: string | null; lan_enabled: boolean }>("GET", "/auth/status"),
+  pair: (code: string, deviceName: string) =>
+    request<{ device: Device }>("POST", "/auth/pair", { code, device_name: deviceName }),
+  logout: () => request<void>("POST", "/auth/logout", {}),
+  listDevices: () => request<Device[]>("GET", "/devices"),
+  startPairing: () => request<{ code: string; expires_in_seconds: number; urls: string[] }>("POST", "/devices/pairing", {}),
+  deleteDevice: (id: string) => request<void>("DELETE", `/devices/${id}`),
 
   getLlmSettings: () => request<LlmSettings>("GET", "/settings/llm"),
   getGeminiModels: () => request<LlmModel[]>("GET", "/settings/llm/models"),

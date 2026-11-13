@@ -141,6 +141,24 @@ export class ChatPanel {
     this.render();
   }
 
+  /** 他の端末でチャットや提案が変わったときに呼ぶ。入力中の依頼文はそのまま残す。 */
+  async refreshFromRemote(): Promise<void> {
+    if (!this.projectId || this.sending) return;
+    const projectId = this.projectId;
+    const chats = await api.listChats(projectId);
+    if (this.projectId !== projectId || this.sending) return;
+    this.chats = chats;
+    if (this.chat && chats.some((c) => c.id === this.chat?.id)) {
+      this.chat = await api.getChat(this.chat.id);
+    } else if (this.chat) {
+      this.chat = null;
+    }
+    const atBottom = this.list.scrollHeight - this.list.scrollTop - this.list.clientHeight < 40;
+    this.render();
+    if (atBottom) this.list.scrollTop = this.list.scrollHeight;
+    void this.refreshUsage();
+  }
+
   async refreshUsage(): Promise<void> {
     try {
       this.usage = await api.getUsage();

@@ -108,11 +108,20 @@ export class SceneEditor {
   private loadToken = 0;
   private busy = false;
   private disposeSource: (() => void) | null = null;
+  /** 編集中のため読み直しを保留している、他の端末での変更。 */
+  private pendingRemote = false;
 
   constructor(
     private readonly root: HTMLElement,
     private readonly options: SceneEditorOptions,
-  ) {}
+  ) {
+    root.addEventListener("focusout", (e) => {
+      if (!this.pendingRemote) return;
+      if (e.relatedTarget instanceof Node && root.contains(e.relatedTarget)) return;
+      // 保存が終わってから読み直す。
+      window.setTimeout(() => void this.syncFromRemote(), 1500);
+    });
+  }
 
   get sceneId(): string | null {
     return this.scene?.id ?? null;
@@ -163,6 +172,50 @@ export class SceneEditor {
 
   hasUnsavedChanges(): boolean {
     return this.savers.some((s) => s.state !== "saved");
+  }
+
+  /**
+   * 他の端末で場面が変更されたときに呼ぶ。
+   *
+   * 未保存の変更がある場合は読み直さない（保存時にリビジョンの照合で競合として検出し、
+   * 両方の内容を見せて選んでもらう）。入力中のカーソル位置はできるだけ保つ。
+   */
+  async syncFromRemote(): Promise<void> {
+    const scene = this.scene;
+    if (!scene || this.busy || this.hasUnsavedChanges()) return;
+    let latest: SceneDetail;
+    try {
+      latest = await api.getScene(scene.id);
+    } catch {
+      return;
+    }
+    if (this.scene !== scene || latest.revision === scene.revision || this.hasUnsavedChanges()) return;
+    const active = document.activeElement;
+    if (this.mode === "markdown" && active instanceof Node && this.root.contains(active)) {
+      // ソース編集中に全体を差し替えるとカーソルが飛ぶため、編集欄を離れたときに読み直す。
+      this.pendingRemote = true;
+      return;
+    }
+    let restore: (() => void) | null = null;
+    if (active instanceof HTMLElement && this.root.contains(active)) {
+      const id = active.closest<HTMLElement>(".block")?.dataset.id;
+      const cls = ["body", "speaker", "kind-select", "scene-title"].find((c) => active.classList.contains(c));
+      const start = active instanceof HTMLTextAreaElement || active instanceof HTMLInputElement ? active.selectionStart : null;
+      restore = () => {
+        const selector = cls === "scene-title" ? ".scene-title" : id && cls ? `.block[data-id="${id}"] .${cls}` : null;
+        const target = selector ? this.root.querySelector<HTMLElement>(selector) : null;
+        if (!target) return;
+        target.focus();
+        if (start !== null && (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement)) {
+          const pos = Math.min(start, target.value.length);
+          target.setSelectionRange(pos, pos);
+        }
+      };
+    }
+    this.scene = latest;
+    this.pendingRemote = false;
+    await this.render();
+    restore?.();
   }
 
   private reportState(): void {

@@ -13,7 +13,8 @@ interface FormValue {
 }
 
 /** 設定ダイアログを開く。保存した場合は true。 */
-export async function openAiSettings(): Promise<boolean> {
+/** `local` が false（iPad などの端末）の場合、API キーの欄は表示しない（キーを LAN に流さないため）。 */
+export async function openAiSettings(local = true): Promise<boolean> {
   const [settings, usage] = await Promise.all([api.getLlmSettings(), api.getUsage()]);
   let models: LlmModel[] = [];
   const value = await openDialog<FormValue>((close) => {
@@ -103,18 +104,24 @@ export async function openAiSettings(): Promise<boolean> {
             monthly_token_limit: Math.max(0, Math.floor(Number(limit.value) || 0)),
             warn_percent: Math.floor(Number(warn.value) || 0),
           };
-          if (removeKey.checked) result.api_key = "";
-          else if (key.value.trim()) result.api_key = key.value.trim();
+          if (local && removeKey.checked) result.api_key = "";
+          else if (local && key.value.trim()) result.api_key = key.value.trim();
           close(result);
         },
       },
       h("h2", {}, "AI 設定・使用量"),
-      h(
-        "label", { class: "form-row" },
-        h("span", {}, "Gemini API キー（この PC にのみ保存され、画面には表示されません）"),
-        key,
-      ),
-      settings.has_api_key ? h("label", { class: "check" }, removeKey, "保存済みの API キーを削除する") : null,
+      local
+        ? h(
+            "label", { class: "form-row" },
+            h("span", {}, "Gemini API キー（この PC にのみ保存され、画面には表示されません）"),
+            key,
+          )
+        : h(
+            "p", { class: "hint" },
+            settings.has_api_key ? "API キーは PC に登録済みです。" : "API キーが未登録です。",
+            "API キーの登録・変更は、安全のため PC 本体の画面からのみ行えます。",
+          ),
+      local && settings.has_api_key ? h("label", { class: "check" }, removeKey, "保存済みの API キーを削除する") : null,
       h("div", { class: "form-row" }, h("span", {}, "Gemini モデル"), model.element),
       h("div", { class: "form-row" }, refreshModels, modelStatus),
       h("label", { class: "form-row" }, h("span", {}, "月あたりのトークン上限（0 で無制限。到達すると AI の利用を自動停止）"), limit),

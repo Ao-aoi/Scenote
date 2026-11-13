@@ -272,3 +272,12 @@ export const CATEGORY_LABELS: Record<string, string> = {
   density: "演出・説明の密度",
   other: "その他",
 };
+
+// ---- Phase 4: 端末 ----
+
+export interface Device {
+  id: string;
+  name: string;
+  created_at: string;
+  last_seen_at: string;
+}
