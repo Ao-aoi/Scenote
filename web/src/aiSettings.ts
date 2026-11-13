@@ -2,6 +2,7 @@
 
 import { api } from "./api";
 import { h, openDialog, toast } from "./dom";
+import { describeModel, ModelPicker } from "./modelPicker";
 import type { LlmModel } from "./types";
 
 interface FormValue {
@@ -23,25 +24,24 @@ export async function openAiSettings(): Promise<boolean> {
       placeholder: settings.has_api_key ? "設定済み（変更する場合のみ入力）" : "Gemini API キーを入力",
     });
     const removeKey = h("input", { type: "checkbox" });
-    const model = h("select", { class: "field", required: true });
+    const model = new ModelPicker(settings.model, "Gemini モデル");
     const modelStatus = h("p", { class: "hint" });
     const refreshModels = h("button", { type: "button" }, "モデル一覧を更新");
     let loading = false;
     const renderModels = (error?: string) => {
-      const current = model.value || settings.model;
-      const choices = new Map<string, string>();
-      choices.set("gemini-flash-latest", "Gemini Flash Latest（デフォルト）");
-      for (const item of models) choices.set(item.id, item.display_name);
-      if (!choices.has(settings.model)) choices.set(settings.model, settings.model + "（現在の設定）");
-      model.replaceChildren(...[...choices].map(([id, label]) =>
-        h("option", { value: id, selected: id === current }, label),
-      ));
+      const choices = new Map<string, { label: string; meta: string }>();
+      choices.set("gemini-flash-latest", { label: "Gemini Flash Latest", meta: "デフォルト · 最新の Flash" });
+      for (const item of models) {
+        if (item.id !== "gemini-flash-latest") choices.set(item.id, { label: item.display_name, meta: describeModel(item) });
+      }
+      if (!choices.has(settings.model)) choices.set(settings.model, { label: settings.model, meta: "現在の設定" });
+      model.setChoices([...choices].map(([id, c]) => ({ id, ...c })));
       modelStatus.textContent = loading
         ? "モデル一覧を取得しています…"
         : error
           ? error
           : models.length
-        ? models.length + " 個の generateContent 対応モデルを取得しました。"
+        ? `文章生成に使える ${models.length} 個のモデルを取得しました（画像・音声生成などの専用モデルは除外）。リリース日は Gemini API から取得できないため、バージョンと入出力の上限を表示しています。`
         : settings.has_api_key
           ? "モデル一覧を取得できませんでした。APIキー・通信状態を確認して再取得してください。"
           : "APIキーを設定すると、利用可能なモデル一覧を取得できます。";
@@ -99,7 +99,7 @@ export async function openAiSettings(): Promise<boolean> {
         onsubmit: (e: Event) => {
           e.preventDefault();
           const result: FormValue = {
-            model: model.value.trim(),
+            model: model.value,
             monthly_token_limit: Math.max(0, Math.floor(Number(limit.value) || 0)),
             warn_percent: Math.floor(Number(warn.value) || 0),
           };
@@ -115,7 +115,7 @@ export async function openAiSettings(): Promise<boolean> {
         key,
       ),
       settings.has_api_key ? h("label", { class: "check" }, removeKey, "保存済みの API キーを削除する") : null,
-      h("label", { class: "form-row" }, h("span", {}, "Gemini モデル"), model),
+      h("div", { class: "form-row" }, h("span", {}, "Gemini モデル"), model.element),
       h("div", { class: "form-row" }, refreshModels, modelStatus),
       h("label", { class: "form-row" }, h("span", {}, "月あたりのトークン上限（0 で無制限。到達すると AI の利用を自動停止）"), limit),
       h("label", { class: "form-row" }, h("span", {}, "警告を出す使用率（%）"), warn),

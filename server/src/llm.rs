@@ -38,6 +38,12 @@ pub struct LlmResponse {
 pub struct LlmModel {
     pub id: String,
     pub display_name: String,
+    /// プロバイダーが返すバージョン表記（リリース日は API から取得できない）。
+    pub version: Option<String>,
+    pub input_token_limit: Option<i64>,
+    pub output_token_limit: Option<i64>,
+    /// 思考（thinking）に対応しているか。不明なら `None`。
+    pub thinking: Option<bool>,
 }
 
 pub type LlmModelsFuture<'a> =
@@ -160,6 +166,19 @@ pub(crate) fn gemini_error_message(status: u16, body: &Value) -> String {
 }
 
 /// `models.list` の 1 ページ分から、generateContent に対応したモデルを `models` へ追加する。
+/// 文章生成に向かないモデルを示す語。`generateContent` に対応していても、画像・音声の生成や
+/// リアルタイム対話などの専用モデルは、シナリオ執筆では使えないため一覧から外す。
+const NON_TEXT_MARKERS: [&str; 14] = [
+    "image", "imagen", "nano-banana", "nano banana", "tts", "audio", "speech", "live", "veo",
+    "lyria", "embedding", "aqa", "robotics", "computer-use",
+];
+
+/// 文章の生成・推敲に使えるモデルか。ID と表示名から判定する。
+pub(crate) fn is_text_model(id: &str, display_name: &str) -> bool {
+    let haystack = format!("{} {}", id, display_name).to_lowercase();
+    !NON_TEXT_MARKERS.iter().any(|m| haystack.contains(m))
+}
+
 pub(crate) fn collect_models(body: &Value, models: &mut Vec<LlmModel>) -> Result<(), LlmError> {
     let entries = body["models"]
         .as_array()
@@ -185,7 +204,22 @@ pub(crate) fn collect_models(body: &Value, models: &mut Vec<LlmModel>) -> Result
             .filter(|s| !s.is_empty())
             .unwrap_or(name)
             .to_string();
-        models.push(LlmModel { id: name.to_string(), display_name });
+        if !is_text_model(name, &display_name) {
+            continue;
+        }
+        let version = entry["version"]
+            .as_str()
+            .map(str::trim)
+            .filter(|v| !v.is_empty() && v.len() <= 50)
+            .map(str::to_string);
+        models.push(LlmModel {
+            id: name.to_string(),
+            display_name,
+            version,
+            input_token_limit: entry["inputTokenLimit"].as_i64().filter(|n| *n > 0),
+            output_token_limit: entry["outputTokenLimit"].as_i64().filter(|n| *n > 0),
+            thinking: entry["thinking"].as_bool(),
+        });
     }
     Ok(())
 }
@@ -292,7 +326,15 @@ mod tests {
     #[test]
     fn collects_generate_content_models_only() {
         let page = json!({ "models": [
-            { "name": "models/gemini-a", "displayName": "Gemini A", "supportedGenerationMethods": ["generateContent", "countTokens"] },
+            { "name": "models/gemini-a", "displayName": "Gemini A", "version": "3.8", "inputTokenLimit": 1048576,
+              "outputTokenLimit": 65536, "thinking": true, "supportedGenerationMethods": ["generateContent", "countTokens"] },
+            { "name": "models/gemini-3-pro-image-preview", "displayName": "Nano Banana Pro", "supportedGenerationMethods": ["generateContent"] },
+            { "name": "models/gemini-x", "displayName": "Nano Banana", "supportedGenerationMethods": ["generateContent"] },
+            { "name": "models/gemini-2.5-flash-preview-tts", "displayName": "Gemini TTS", "supportedGenerationMethods": ["generateContent"] },
+            { "name": "models/gemini-live-2.5-flash", "displayName": "Live", "supportedGenerationMethods": ["generateContent"] },
+            { "name": "models/gemini-2.5-flash-native-audio", "displayName": "Audio", "supportedGenerationMethods": ["generateContent"] },
+            { "name": "models/gemini-robotics-er", "displayName": "Robotics", "supportedGenerationMethods": ["generateContent"] },
+            { "name": "models/gemma-3-27b-it", "displayName": "Gemma 3 27B", "supportedGenerationMethods": ["generateContent"] },
             { "name": "models/embed-x", "displayName": "Embed", "supportedGenerationMethods": ["embedContent"] },
             { "name": "models/no-methods" },
             { "name": "tunedModels/foo", "supportedGenerationMethods": ["generateContent"] },
@@ -303,7 +345,10 @@ mod tests {
         let mut models = Vec::new();
         collect_models(&page, &mut models).unwrap();
         let got: Vec<(&str, &str)> = models.iter().map(|m| (m.id.as_str(), m.display_name.as_str())).collect();
-        assert_eq!(got, [("gemini-a", "Gemini A"), ("gemini-b", "gemini-b")]);
+        assert_eq!(got, [("gemini-a", "Gemini A"), ("gemma-3-27b-it", "Gemma 3 27B"), ("gemini-b", "gemini-b")]);
+        assert_eq!(models[0].version.as_deref(), Some("3.8"));
+        assert_eq!((models[0].input_token_limit, models[0].output_token_limit, models[0].thinking), (Some(1048576), Some(65536), Some(true)));
+        assert_eq!((models[1].version.as_deref(), models[1].thinking), (None, None));
         assert!(collect_models(&json!({ "error": {} }), &mut models).is_err());
     }
 

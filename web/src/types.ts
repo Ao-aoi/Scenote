@@ -162,6 +162,10 @@ export interface UsageStatus {
 export interface LlmModel {
   id: string;
   display_name: string;
+  version: string | null;
+  input_token_limit: number | null;
+  output_token_limit: number | null;
+  thinking: boolean | null;
 }
 
 export interface LlmSettings {
