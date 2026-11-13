@@ -71,7 +71,13 @@ struct Env {
 }
 
 async fn call(app: &Router, method: &str, path: &str, body: Option<Value>) -> (StatusCode, Value) {
-    let builder = Request::builder().method(method).uri(path);
+    // PC 本体（ループバック）の画面からの要求として送る。
+    let builder = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("host", "127.0.0.1:8787")
+        .header("x-scenote", "1")
+        .extension(axum::extract::ConnectInfo("127.0.0.1:50000".parse::<std::net::SocketAddr>().unwrap()));
     let request = match body {
         Some(v) => builder
             .header("content-type", "application/json")
@@ -84,7 +90,11 @@ async fn call(app: &Router, method: &str, path: &str, body: Option<Value>) -> (S
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let text = String::from_utf8(bytes.to_vec()).unwrap();
     assert!(!text.contains(SECRET_KEY), "API キーが応答に含まれている: {path}");
-    let value = if text.is_empty() { Value::Null } else { serde_json::from_str(&text).unwrap() };
+    let value = if text.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_str(&text).unwrap_or_else(|_| panic!("{method} {path} -> {status}: {text}"))
+    };
     (status, value)
 }
 

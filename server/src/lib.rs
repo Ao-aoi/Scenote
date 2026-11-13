@@ -11,6 +11,7 @@
 
 pub mod api;
 pub mod assistant;
+pub mod auth;
 pub mod error;
 pub mod history;
 pub mod llm;
@@ -20,3 +21,4 @@ pub mod preferences;
 pub mod diff;
 pub mod store;
 pub mod store_ai;
+pub mod sync;

@@ -15,7 +15,13 @@ fn app() -> Router {
 }
 
 async fn call(app: &Router, method: &str, path: &str, body: Option<Value>) -> (StatusCode, String) {
-    let builder = Request::builder().method(method).uri(path);
+    // PC 本体（ループバック）の画面からの要求として送る。
+    let builder = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("host", "127.0.0.1:8787")
+        .header("x-scenote", "1")
+        .extension(axum::extract::ConnectInfo("127.0.0.1:50000".parse::<std::net::SocketAddr>().unwrap()));
     let request = match body {
         Some(v) => builder
             .header("content-type", "application/json")

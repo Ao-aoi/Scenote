@@ -10,6 +10,8 @@ pub enum AppError {
     Invalid(String),
     /// 楽観ロックの競合。`current` はサーバー側の現在のリビジョン。
     Conflict { current: i64 },
+    /// この端末には許可されていない操作。
+    Forbidden(String),
     /// LLM プロバイダーの呼び出しに失敗した。メッセージはユーザーへ表示する。
     Llm(String),
     /// 使用量の上限に達し、API 利用を停止している。
@@ -29,7 +31,7 @@ impl fmt::Display for AppError {
                 f,
                 "他の画面または端末で先に変更されています。最新の内容を読み込んでから編集し直してください"
             ),
-            AppError::Llm(msg) => write!(f, "{msg}"),
+            AppError::Llm(msg) | AppError::Forbidden(msg) => write!(f, "{msg}"),
             AppError::LlmStopped => write!(
                 f,
                 "API 使用量が上限に達したため、AI の利用を停止しています。設定で上限を変更するか、利用を再開してください"

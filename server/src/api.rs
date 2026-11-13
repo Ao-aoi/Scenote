@@ -7,12 +7,14 @@ use axum::extract::{Path, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tower_http::services::{ServeDir, ServeFile};
 
+use crate::auth::{self, Device, Pairing, Principal};
 use crate::error::{AppError, Result};
+use crate::sync::{self, EventSender};
 use crate::model::*;
 use crate::assistant::{self, Exchange, SendRequest};
 use crate::history::{CompareItem, HistoryEntry, SnapshotInfo, SNAPSHOT_MANUAL};
@@ -29,6 +31,12 @@ pub struct AppState {
     provider: Arc<dyn LlmProvider>,
     /// 環境変数で与えられた API キー（設定画面での登録より優先する）。
     env_api_key: Option<Arc<str>>,
+    /// 発行中のペアリングコード。
+    pairing: Arc<Mutex<Option<Pairing>>>,
+    /// 端末間の変更通知。
+    pub(crate) events: EventSender,
+    /// iPad などから接続するための URL（LAN に公開している場合のみ）。
+    lan_urls: Arc<Vec<String>>,
 }
 
 impl AppState {
@@ -37,10 +45,23 @@ impl AppState {
             store: Arc::new(Mutex::new(store)),
             provider,
             env_api_key: env_api_key.filter(|k| !k.trim().is_empty()).map(Arc::from),
+            pairing: Arc::new(Mutex::new(None)),
+            events: sync::channel(),
+            lan_urls: Arc::new(Vec::new()),
         }
     }
 
-    fn store(&self) -> MutexGuard<'_, Store> {
+    /// LAN からの接続先 URL を設定する（起動時に一度だけ）。
+    pub fn with_lan_urls(mut self, urls: Vec<String>) -> Self {
+        self.lan_urls = Arc::new(urls);
+        self
+    }
+
+    fn pairing(&self) -> MutexGuard<'_, Option<Pairing>> {
+        self.pairing.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn store(&self) -> MutexGuard<'_, Store> {
         // 他のリクエスト処理中のパニックで毒化していても、DB 自体はトランザクションで保護されている。
         self.store.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -54,6 +75,7 @@ impl IntoResponse for AppError {
             AppError::Conflict { .. } => (StatusCode::CONFLICT, "conflict"),
             AppError::Llm(_) => (StatusCode::BAD_GATEWAY, "llm"),
             AppError::LlmStopped => (StatusCode::TOO_MANY_REQUESTS, "llm_stopped"),
+            AppError::Forbidden(_) => (StatusCode::FORBIDDEN, "forbidden"),
             AppError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         };
         if let AppError::Internal(detail) = &self {
@@ -72,6 +94,13 @@ impl IntoResponse for AppError {
 pub fn router(state: AppState, web_dir: Option<&FsPath>) -> Router {
     let api = Router::new()
         .route("/meta", get(meta))
+        .route("/auth/status", get(auth_status))
+        .route("/auth/pair", post(auth_pair))
+        .route("/auth/logout", post(auth_logout))
+        .route("/devices", get(list_devices))
+        .route("/devices/pairing", post(start_pairing))
+        .route("/devices/{id}", delete(delete_device))
+        .route("/events", get(sync::events))
         .route("/projects", get(list_projects).post(create_project))
         .route(
             "/projects/{id}",
@@ -121,15 +150,17 @@ pub fn router(state: AppState, web_dir: Option<&FsPath>) -> Router {
         .route("/usage", get(usage))
         .route("/usage/resume", post(resume_usage))
         .fallback(|| async { AppError::NotFound("API") })
-        .with_state(state);
+        .with_state(state.clone());
 
     let app = Router::new().nest("/api", api);
-    match web_dir {
+    let app = match web_dir {
         Some(dir) => app.fallback_service(
             ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html"))),
         ),
         None => app,
-    }
+    };
+    // 認証は最も外側で行う（入れ子のルーターの内側ではパスから /api が取り除かれるため）。
+    app.layer(axum::middleware::from_fn_with_state(state, sync::guard))
 }
 
 async fn meta() -> Json<Value> {
@@ -574,8 +605,13 @@ async fn llm_settings(State(s): State<AppState>) -> Result<Json<LlmSettings>> {
 
 async fn update_llm_settings(
     State(s): State<AppState>,
+    Extension(principal): Extension<Principal>,
     Json(req): Json<UpdateLlmSettings>,
 ) -> Result<Json<LlmSettings>> {
+    // API キーを LAN 上に流さないよう、キーの登録・削除は PC 本体からのみ受け付ける。
+    if req.api_key.is_some() && !principal.is_local() {
+        return Err(AppError::Forbidden("API キーの登録・削除は PC 本体の画面から行ってください".into()));
+    }
     let mut store = s.store();
     store.update_llm_settings(
         req.api_key.as_deref(),
@@ -778,4 +814,99 @@ async fn update_preference_settings(
     let mut store = s.store();
     store.update_preference_settings(req.auto_update, req.include_direct_edits)?;
     Ok(Json(store.preference_settings()?))
+}
+
+// ---- 認証・端末（Phase 4） ----------------------------------------------
+
+async fn auth_status(State(s): State<AppState>, principal: Option<Extension<Principal>>) -> Json<Value> {
+    let (authenticated, local, device) = match principal.map(|Extension(p)| p) {
+        Some(Principal::Local) => (true, true, None),
+        Some(Principal::Device { name, .. }) => (true, false, Some(name)),
+        None => (false, false, None),
+    };
+    Json(json!({
+        "authenticated": authenticated,
+        "local": local,
+        "device_name": device,
+        "lan_enabled": !s.lan_urls.is_empty(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct PairBody {
+    code: String,
+    #[serde(default)]
+    device_name: String,
+}
+
+async fn auth_pair(State(s): State<AppState>, Json(req): Json<PairBody>) -> Result<Response> {
+    let code: String = req.code.chars().filter(char::is_ascii_digit).collect();
+    {
+        let mut pairing = s.pairing();
+        let Some(current) = pairing.as_mut().filter(|p| p.is_valid()) else {
+            *pairing = None;
+            return Err(AppError::Invalid(
+                "ペアリングコードが無効か、期限が切れています。PC の画面で新しいコードを発行してください".into(),
+            ));
+        };
+        // 長さの違いや一致した桁数で時間差が出ないよう、ハッシュどうしを比べる。
+        if auth::hash_token(&code) != auth::hash_token(&current.code) {
+            current.failures += 1;
+            let left = auth::PAIRING_MAX_FAILURES.saturating_sub(current.failures);
+            if left == 0 {
+                *pairing = None;
+                return Err(AppError::Invalid("入力の誤りが続いたため、このコードは無効になりました。PC の画面で新しいコードを発行してください".into()));
+            }
+            return Err(AppError::Invalid(format!("ペアリングコードが違います（あと {left} 回まで入力できます）")));
+        }
+        // コードは一度だけ使える。
+        *pairing = None;
+    }
+    let (device, token) = s.store().register_device(&req.device_name)?;
+    let _ = s.events.send(sync::ChangeEvent { kind: "change", scopes: vec!["devices"], client: None, device_id: None });
+    let mut response = Json(json!({ "device": device })).into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&auth::session_cookie(&token)).map_err(|_| AppError::Internal("cookie".into()))?,
+    );
+    Ok(response)
+}
+
+async fn auth_logout(State(s): State<AppState>, Extension(principal): Extension<Principal>) -> Result<Response> {
+    if let Principal::Device { id, .. } = &principal {
+        s.store().delete_device(id)?;
+    }
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    response
+        .headers_mut()
+        .insert(header::SET_COOKIE, HeaderValue::from_str(&auth::clear_cookie()).map_err(|_| AppError::Internal("cookie".into()))?);
+    Ok(response)
+}
+
+async fn list_devices(State(s): State<AppState>) -> Result<Json<Vec<Device>>> {
+    Ok(Json(s.store().list_devices()?))
+}
+
+/// ペアリングコードを発行する（PC 本体のみ）。以前のコードは無効になる。
+async fn start_pairing(State(s): State<AppState>) -> Result<Json<Value>> {
+    if s.lan_urls.is_empty() {
+        return Err(AppError::Invalid(
+            "LAN への公開が無効です。サーバーを SCENOTE_LAN=1 で起動してから、ペアリングコードを発行してください".into(),
+        ));
+    }
+    let pairing = Pairing::new();
+    let code = pairing.code.clone();
+    *s.pairing() = Some(pairing);
+    Ok(Json(json!({
+        "code": code,
+        "expires_in_seconds": auth::PAIRING_TTL.as_secs(),
+        "urls": *s.lan_urls,
+    })))
+}
+
+async fn delete_device(State(s): State<AppState>, Path(id): Path<String>) -> Result<StatusCode> {
+    s.store().delete_device(&id)?;
+    // 接続中の通知用 WebSocket も切断する。
+    let _ = s.events.send(sync::ChangeEvent { kind: "device_revoked", scopes: vec![], client: None, device_id: Some(id) });
+    Ok(StatusCode::NO_CONTENT)
 }

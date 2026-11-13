@@ -13,8 +13,9 @@ name = "scenote-server"
 path = "src/main.rs"
 
 [dependencies]
-axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+sha2 = "0.10"
 tower-http = { version = "0.6", features = ["fs"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
