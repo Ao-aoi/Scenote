@@ -39,7 +39,12 @@ async fn main() {
 
     // API キーは環境変数 GEMINI_API_KEY、または画面の「AI 設定」から登録する（PC 側にのみ保存）。
     let env_api_key = std::env::var("GEMINI_API_KEY").ok();
-    let state = AppState::new(store, Arc::new(GeminiProvider::new()), env_api_key);
+    // 接続先は通常変更不要。検証用の模擬サーバーや中継サーバーを使う場合のみ指定する。
+    let provider = match std::env::var("SCENOTE_GEMINI_BASE_URL") {
+        Ok(url) if !url.trim().is_empty() => GeminiProvider::with_base_url(url.trim()),
+        _ => GeminiProvider::new(),
+    };
+    let state = AppState::new(store, Arc::new(provider), env_api_key);
     let app = api::router(state, Some(&web_dir));
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(listener) => listener,

@@ -1,6 +1,20 @@
 // HTTP API クライアント。画面側はここを通してのみサーバーと通信する。
 
-import type { ElementResult, Meta, Project, ProjectTree, Scene, SceneDetail } from "./types";
+import type {
+  Chat,
+  ChatDetail,
+  ElementResult,
+  Exchange,
+  LlmSettings,
+  Meta,
+  Project,
+  ProjectTree,
+  Proposal,
+  ReferenceFile,
+  Scene,
+  SceneDetail,
+  UsageStatus,
+} from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -95,6 +109,33 @@ export const api = {
     request<{ revision: number; markdown: string }>("GET", `/scenes/${sceneId}/markdown`),
   putSceneMarkdown: (sceneId: string, baseRevision: number, markdown: string) =>
     request<SceneDetail>("PUT", `/scenes/${sceneId}/markdown`, { base_revision: baseRevision, markdown }),
+
+  listFiles: (projectId: string) => request<ReferenceFile[]>("GET", `/projects/${projectId}/files`),
+  createFile: (projectId: string, name: string) =>
+    request<ReferenceFile>("POST", `/projects/${projectId}/files`, { name, content: "" }),
+  getFile: (id: string) => request<ReferenceFile>("GET", `/files/${id}`),
+  updateFile: (id: string, baseRevision: number, patch: { name?: string; content?: string; pinned?: boolean }) =>
+    request<ReferenceFile>("PATCH", `/files/${id}`, { base_revision: baseRevision, ...patch }),
+  deleteFile: (id: string) => request<void>("DELETE", `/files/${id}`),
+
+  listChats: (projectId: string) => request<Chat[]>("GET", `/projects/${projectId}/chats`),
+  createChat: (projectId: string, title: string) => request<Chat>("POST", `/projects/${projectId}/chats`, { title }),
+  getChat: (id: string) => request<ChatDetail>("GET", `/chats/${id}`),
+  updateChat: (id: string, patch: Partial<Pick<Chat, "title" | "instructions" | "auto_select" | "file_ids">>) =>
+    request<Chat>("PATCH", `/chats/${id}`, patch),
+  deleteChat: (id: string) => request<void>("DELETE", `/chats/${id}`),
+  sendMessage: (
+    chatId: string,
+    input: { content: string; scene_id: string | null; include_file_ids: string[]; exclude_file_ids: string[] },
+  ) => request<Exchange>("POST", `/chats/${chatId}/messages`, input),
+  approveProposal: (id: string) => request<Proposal>("POST", `/proposals/${id}/approve`, {}),
+  rejectProposal: (id: string, reason: string) => request<Proposal>("POST", `/proposals/${id}/reject`, { reason }),
+
+  getLlmSettings: () => request<LlmSettings>("GET", "/settings/llm"),
+  updateLlmSettings: (patch: { api_key?: string; model?: string; monthly_token_limit?: number; warn_percent?: number }) =>
+    request<LlmSettings>("PUT", "/settings/llm", patch),
+  getUsage: () => request<UsageStatus>("GET", "/usage"),
+  resumeUsage: () => request<UsageStatus>("POST", "/usage/resume", {}),
 
   exportUrl: (projectId: string, format: "markdown" | "json") => `/api/projects/${projectId}/export/${format}`,
 };

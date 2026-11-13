@@ -1,10 +1,13 @@
 // アプリ全体のシェル: プロジェクト選択、章・場面のナビゲーション、エクスポート。
 
 import "./style.css";
+import { openAiSettings } from "./aiSettings";
 import { api } from "./api";
+import { ChatPanel } from "./chat";
 import { askConfirm, askProject, askText, h, openMenu, toast, type MenuItem } from "./dom";
+import { FileEditor } from "./fileEditor";
 import { SceneEditor, type SaveState, type SceneEditorOptions } from "./sceneEditor";
-import { TEMPLATE_LABELS, type Meta, type Project, type ProjectTree } from "./types";
+import { TEMPLATE_LABELS, type Meta, type Project, type ProjectTree, type ReferenceFile } from "./types";
 
 const LAST_PROJECT_KEY = "scenote.lastProject";
 const lastSceneKey = (projectId: string) => `scenote.lastScene.${projectId}`;
@@ -20,11 +23,22 @@ const STATE_LABELS: Record<SaveState, string> = {
 let meta: Meta;
 let projects: Project[] = [];
 let tree: ProjectTree | null = null;
+let files: ReferenceFile[] = [];
+/** 本文領域に表示しているもの。 */
+let view: "scene" | "file" = "scene";
+const saveStates: Record<"scene" | "file", { state: SaveState; message?: string }> = {
+  scene: { state: "saved" },
+  file: { state: "saved" },
+};
 
 const projectSelect = h("select", { class: "project-select", "aria-label": "プロジェクト" });
 const status = h("span", { class: "status", role: "status" });
 const nav = h("nav", { class: "nav", "aria-label": "章と場面" });
-const main = h("main", { class: "main" });
+const sceneHost = h("div", { class: "editor-host" });
+const fileHost = h("div", { class: "editor-host", hidden: true });
+const main = h("main", { class: "main" }, sceneHost, fileHost);
+const chatHost = h("aside", { class: "chat", "aria-label": "AI チャット" });
+const chatToggle = h("button", { type: "button", "aria-pressed": "true", "aria-label": "AI チャットを開閉" }, "AI");
 const navToggle = h("button", { type: "button", class: "icon", "aria-label": "章と場面の一覧を開閉" }, "☰");
 const settingsButton = h("button", { type: "button" }, "設定");
 const exportButton = h("button", { type: "button" }, "書き出し");
@@ -38,20 +52,69 @@ const shell = h(
     settingsButton,
     exportButton,
     status,
+    chatToggle,
   ),
-  h("div", { class: "workspace" }, nav, main),
+  h("div", { class: "workspace" }, nav, main, chatHost),
 );
+
+function showSaveState(): void {
+  const { state, message } = saveStates[view];
+  status.textContent = STATE_LABELS[state];
+  status.className = `status status-${state}`;
+  status.title = message ?? "";
+}
 
 const editorOptions: SceneEditorOptions = {
   kinds: [],
   onStateChange: (state, message) => {
-    status.textContent = STATE_LABELS[state];
-    status.className = `status status-${state}`;
-    status.title = message ?? "";
+    saveStates.scene = { state, message };
+    showSaveState();
   },
   onSceneRenamed: () => void refreshTree(),
 };
-const editor = new SceneEditor(main, editorOptions);
+const editor = new SceneEditor(sceneHost, editorOptions);
+
+const fileEditor = new FileEditor(fileHost, {
+  onStateChange: (state, message) => {
+    saveStates.file = { state, message };
+    showSaveState();
+  },
+  onListChanged: () => void run(refreshFiles),
+  onDeleted: () => void run(async () => {
+    await refreshFiles();
+    await selectScene(editor.sceneId ?? allSceneIds()[0] ?? null);
+  }),
+});
+
+async function flushEditors(): Promise<boolean> {
+  const results = await Promise.all([editor.flush(), fileEditor.flush()]);
+  return results.every(Boolean);
+}
+
+const chat = new ChatPanel(chatHost, {
+  currentSceneId: () => editor.sceneId,
+  flushEditors,
+  onApplied: async (proposal) => {
+    if (proposal.op === "update_file" || proposal.op === "create_file") {
+      await refreshFiles();
+      if (proposal.target_id && proposal.target_id === fileEditor.fileId) await fileEditor.syncFromServer();
+    } else if (proposal.scene_id && proposal.scene_id === editor.sceneId) {
+      await editor.syncFromServer();
+    }
+  },
+  openAiSettings: () => void run(showAiSettings),
+});
+
+async function showAiSettings(): Promise<void> {
+  if (await openAiSettings()) await chat.refreshUsage();
+}
+
+function setView(next: "scene" | "file"): void {
+  view = next;
+  sceneHost.hidden = next !== "scene";
+  fileHost.hidden = next !== "file";
+  showSaveState();
+}
 
 function report(e: unknown): void {
   toast(e instanceof Error ? e.message : "予期しないエラーが発生しました", "error");
@@ -94,11 +157,14 @@ async function loadProjects(): Promise<void> {
 
 async function openProject(projectId: string | null): Promise<void> {
   if (projectId === null) {
-    if (!(await editor.open(null))) return;
+    if (!(await fileEditor.open(null)) || !(await editor.open(null))) return;
     tree = null;
+    files = [];
+    setView("scene");
     renderProjectSelect();
     renderNav();
-    main.replaceChildren(
+    await chat.setProject(null);
+    sceneHost.replaceChildren(
       h(
         "div", { class: "empty" },
         h("p", {}, "プロジェクトがありません。最初のプロジェクトを作成してください。"),
@@ -111,14 +177,17 @@ async function openProject(projectId: string | null): Promise<void> {
   const ids = next.chapters.flatMap((c) => c.scenes.map((s) => s.id));
   const remembered = localStorage.getItem(lastSceneKey(projectId));
   const sceneId = remembered && ids.includes(remembered) ? remembered : (ids[0] ?? null);
-  if (!(await editor.open(sceneId))) {
+  if (!(await fileEditor.open(null)) || !(await editor.open(sceneId))) {
     renderProjectSelect();
     return;
   }
   tree = next;
+  files = await api.listFiles(projectId);
+  setView("scene");
   localStorage.setItem(LAST_PROJECT_KEY, projectId);
   renderProjectSelect();
   renderNav();
+  await chat.setProject(projectId);
 }
 
 async function createProject(): Promise<void> {
@@ -149,7 +218,7 @@ async function deleteProject(): Promise<void> {
     `プロジェクト「${project.name}」を削除しますか？章・場面・本文もすべて削除され、元に戻せません。必要であれば先に書き出してください。`,
   );
   if (!ok) return;
-  if (!(await editor.open(null))) return;
+  if (!(await fileEditor.open(null)) || !(await editor.open(null))) return;
   await api.deleteProject(project.id);
   localStorage.removeItem(lastSceneKey(project.id));
   tree = null;
@@ -166,8 +235,28 @@ async function refreshTree(): Promise<void> {
   renderNav();
 }
 
+async function refreshFiles(): Promise<void> {
+  if (!tree) return;
+  files = await api.listFiles(tree.project.id);
+  renderNav();
+}
+
+/** 参照ファイルを本文領域で開く。開いていた場面は保存したうえで、チャットの対象として保持する。 */
+async function selectFile(fileId: string): Promise<void> {
+  if (!(await editor.flush())) {
+    toast("場面の変更を保存できていません。競合やエラーを解消してからやり直してください", "error");
+    return;
+  }
+  if (!(await fileEditor.open(fileId))) return;
+  setView("file");
+  renderNav();
+  shell.classList.remove("nav-open");
+}
+
 async function selectScene(sceneId: string | null): Promise<void> {
+  if (!(await fileEditor.open(null))) return;
   if (!(await editor.open(sceneId))) return;
+  setView("scene");
   if (tree && sceneId) localStorage.setItem(lastSceneKey(tree.project.id), sceneId);
   renderNav();
   shell.classList.remove("nav-open");
@@ -266,7 +355,7 @@ function renderNav(): void {
           }),
         },
       ];
-      const active = scene.id === editor.sceneId;
+      const active = view === "scene" && scene.id === editor.sceneId;
       return h(
         "li", { class: active ? "scene-item active" : "scene-item" },
         h("button", {
@@ -296,6 +385,35 @@ function renderNav(): void {
     );
   });
 
+  const fileItems = files.map((file) => {
+    const active = view === "file" && file.id === fileEditor.fileId;
+    return h(
+      "li", { class: active ? "scene-item active" : "scene-item" },
+      h("button", {
+        type: "button",
+        class: "scene-link",
+        "aria-current": active ? "true" : undefined,
+        onclick: () => void run(() => selectFile(file.id)),
+      }, file.name, file.pinned ? h("span", { class: "pin", title: "常に AI に参照させる" }, " 常時") : null),
+    );
+  });
+  const fileSection = h(
+    "section", { class: "chapter files" },
+    h("div", { class: "chapter-head" }, h("h2", {}, "参照ファイル")),
+    h("ul", {}, ...fileItems),
+    h("button", {
+      type: "button",
+      class: "add",
+      onclick: () => void run(async () => {
+        const name = await askText("新しい参照ファイルの名前", "", "作成");
+        if (!name) return;
+        const file = await api.createFile(current.project.id, name);
+        await refreshFiles();
+        await selectFile(file.id);
+      }),
+    }, "＋ 参照ファイル"),
+  );
+
   nav.replaceChildren(
     ...sections,
     h("button", {
@@ -308,6 +426,7 @@ function renderNav(): void {
         await refreshTree();
       }),
     }, "＋ 章"),
+    fileSection,
   );
 }
 
@@ -322,17 +441,22 @@ projectSelect.addEventListener("change", () => {
 });
 
 navToggle.addEventListener("click", () => shell.classList.toggle("nav-open"));
+chatToggle.addEventListener("click", () => {
+  const hidden = shell.classList.toggle("chat-closed");
+  chatToggle.setAttribute("aria-pressed", String(!hidden));
+});
 
 settingsButton.addEventListener("click", () =>
   openMenu(settingsButton, [
     { label: "プロジェクト設定…", action: () => void run(editProject) },
+    { label: "AI 設定・使用量…", action: () => void run(showAiSettings) },
     { label: "プロジェクトを削除…", danger: true, action: () => void run(deleteProject) },
   ]),
 );
 
 async function download(format: "markdown" | "json"): Promise<void> {
   if (!tree) return;
-  if (!(await editor.flush())) {
+  if (!(await flushEditors())) {
     toast("未保存の変更があるため、書き出しには反映されません", "error");
   }
   const link = h("a", { href: api.exportUrl(tree.project.id, format) });
@@ -350,16 +474,21 @@ exportButton.addEventListener("click", () =>
 
 // 画面を離れる・隠すときは待たずに保存し、保存しきれていなければ警告する。
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") void editor.flush();
+  if (document.visibilityState === "hidden") void flushEditors();
 });
 window.addEventListener("beforeunload", (e) => {
-  if (editor.hasUnsavedChanges()) {
-    void editor.flush();
+  if (editor.hasUnsavedChanges() || fileEditor.hasUnsavedChanges()) {
+    void flushEditors();
     e.preventDefault();
   }
 });
 
 async function start(): Promise<void> {
+  // 狭い画面ではチャットが本文を覆うため、閉じた状態で始める。
+  if (window.innerWidth <= 820) {
+    shell.classList.add("chat-closed");
+    chatToggle.setAttribute("aria-pressed", "false");
+  }
   document.querySelector("#app")!.append(shell);
   try {
     meta = await api.meta();
@@ -369,7 +498,7 @@ async function start(): Promise<void> {
     const initial = projects.find((p) => p.id === remembered) ?? projects[0];
     await openProject(initial?.id ?? null);
   } catch (e) {
-    main.replaceChildren(
+    sceneHost.replaceChildren(
       h(
         "div", { class: "empty" },
         h("p", { class: "error-text" }, e instanceof Error ? e.message : "起動に失敗しました"),

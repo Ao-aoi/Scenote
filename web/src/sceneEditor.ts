@@ -12,7 +12,7 @@ const MODE_KEY = "scenote.editorMode";
 
 type Mode = "blocks" | "markdown";
 
-function errorMessage(e: unknown): string {
+export function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : "予期しないエラーが発生しました";
 }
 
@@ -20,7 +20,7 @@ function errorMessage(e: unknown): string {
  * 入力をまとめて保存する。保存は直列に行い、競合（409）を検出したら
  * ユーザーが解決するまで自動保存を止める。
  */
-class AutoSaver {
+export class AutoSaver {
   dirty = false;
   conflict = false;
   error: string | null = null;
@@ -89,7 +89,7 @@ class AutoSaver {
   }
 }
 
-function autoGrow(textarea: HTMLTextAreaElement): void {
+export function autoGrow(textarea: HTMLTextAreaElement): void {
   textarea.style.height = "auto";
   textarea.style.height = `${textarea.scrollHeight + 2}px`;
 }
@@ -154,6 +154,11 @@ export class SceneEditor {
   async flush(): Promise<boolean> {
     const results = await Promise.all(this.savers.map((s) => s.flush()));
     return results.every(Boolean);
+  }
+
+  /** サーバー側で内容が変わった後（AI 提案の承認など）に、表示を最新にする。 */
+  async syncFromServer(): Promise<void> {
+    if (await this.flush()) await this.reload();
   }
 
   hasUnsavedChanges(): boolean {

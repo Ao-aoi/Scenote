@@ -40,7 +40,7 @@ export function toast(message: string, kind: "info" | "error" = "info"): void {
 }
 
 /** モーダルダイアログを開き、閉じたときの戻り値で解決する。 */
-function openDialog<T>(build: (close: (result: T | null) => void) => HTMLElement): Promise<T | null> {
+export function openDialog<T>(build: (close: (result: T | null) => void) => HTMLElement): Promise<T | null> {
   return new Promise((resolve) => {
     const dialog = h("dialog", { class: "dialog" });
     let result: T | null = null;
