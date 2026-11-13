@@ -190,3 +190,44 @@ export function openMenu(anchor: HTMLElement, items: MenuItem[]): void {
   };
   setTimeout(() => document.addEventListener("pointerdown", dismiss, true));
 }
+
+export interface SnackbarAction {
+  label: string;
+  primary?: boolean;
+  action: () => void;
+}
+
+/**
+ * 操作ボタンつきの案内を画面下部に表示する。編集の邪魔をしないよう、フォーカスは奪わない。
+ * 何も押されないまま `timeoutMs` が過ぎた場合は `onDismiss` を呼んで閉じる。
+ */
+export function snackbar(message: string, actions: SnackbarAction[], onDismiss: () => void, timeoutMs = 30000): void {
+  let host = document.querySelector<HTMLElement>(".toasts");
+  if (!host) {
+    host = h("div", { class: "toasts", role: "status", "aria-live": "polite" });
+    document.body.append(host);
+  }
+  host.querySelector(".snackbar")?.remove();
+  const item = h("div", { class: "toast snackbar" }, h("span", { class: "snackbar-text" }, message));
+  const timer = window.setTimeout(() => {
+    item.remove();
+    onDismiss();
+  }, timeoutMs);
+  const close = () => {
+    window.clearTimeout(timer);
+    item.remove();
+  };
+  for (const a of actions) {
+    item.append(
+      h("button", {
+        type: "button",
+        class: a.primary ? "primary" : "",
+        onclick: () => {
+          close();
+          a.action();
+        },
+      }, a.label),
+    );
+  }
+  host.append(item);
+}
