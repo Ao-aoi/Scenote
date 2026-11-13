@@ -318,6 +318,41 @@ button.icon { min-width: 36px; padding: 4px; border-color: transparent; backgrou
 .usage-table th:first-child, .usage-table td:first-child { text-align: left; }
 button[aria-pressed="true"]:not(.seg) { background: var(--hover); }
 
+/* ---- 履歴・スナップショット・嗜好 ---- */
+.view-title { flex: 1; margin: 0; font-size: 1.35rem; }
+.history-body > * + * { margin-top: 12px; }
+.snapshot-create, .pref-import, .pref-analyze { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.snapshot-create .field, .pref-import .field { flex: 1 1 240px; width: auto; }
+.snapshot-list, .history-list { display: flex; flex-direction: column; gap: 10px; }
+.snapshot, .history-entry, .compare-item { border: 1px solid var(--border); border-radius: 6px; background: var(--surface); padding: 10px 12px; }
+.snapshot-auto { border-style: dashed; }
+.snapshot-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.snapshot-meta { font-size: 0.8rem; }
+.snapshot-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.snapshot-detail:empty { display: none; }
+.snapshot-detail { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.compare-item { background: var(--bg); }
+.compare-item h3 { margin: 0 0 6px; font-size: 0.9rem; }
+.history-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.history-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-bottom: 6px; font-size: 0.9rem; }
+.history-time { margin-left: auto; font-size: 0.8rem; }
+.actor { display: inline-block; border-radius: 10px; padding: 0 8px; font-size: 0.75rem; background: var(--hover); color: var(--muted); }
+.actor-ai_approved { color: var(--k-action); }
+.actor-ai_modified { color: var(--k-direction); }
+.actor-restore { color: var(--k-choice); }
+button.link { border: none; background: none; color: var(--accent); padding: 0; min-height: 0; text-decoration: underline; }
+.pref-section { margin-top: 24px; }
+.pref-section h2 { font-size: 1rem; margin: 0 0 8px; }
+.pref-section .check { margin-top: 4px; }
+.pref-summary { margin-top: 8px; padding: 8px 12px; border-radius: 6px; background: var(--surface); border: 1px solid var(--border); }
+.pref-summary p { margin: 0; }
+.pref-rule { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 12px; margin-bottom: 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
+.pref-suggestion { border-left: 4px solid var(--accent); }
+.pref-rule-main { flex: 1 1 260px; min-width: 0; overflow-wrap: anywhere; }
+.pref-meta { font-size: 0.8rem; margin-top: 2px; }
+.pref-rule-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.edit-body { min-height: 160px; resize: vertical; }
+
 /* ---- モデル選択 ---- */
 .picker { position: relative; }
 .picker-button { display: flex; align-items: center; gap: 8px; text-align: left; }

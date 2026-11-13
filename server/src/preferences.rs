@@ -426,8 +426,15 @@ impl Store {
             }
             out
         };
-        let global = section("共通の嗜好", &self.list_rules(None)?);
-        let project = section("このプロジェクトでの嗜好", &self.list_rules(Some(project_id))?);
+        let project_rules = self.list_rules(Some(project_id))?;
+        // 共通へ複製したルールなど、プロジェクトのルールと同じ文面のものは重ねて伝えない。
+        let global_rules: Vec<Rule> = self
+            .list_rules(None)?
+            .into_iter()
+            .filter(|g| !project_rules.iter().any(|p| p.text == g.text))
+            .collect();
+        let global = section("共通の嗜好", &global_rules);
+        let project = section("このプロジェクトでの嗜好", &project_rules);
         if global.is_empty() && project.is_empty() {
             return Ok(String::new());
         }

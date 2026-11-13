@@ -55,7 +55,7 @@ function describeContent(c: ProposalContent | null): string {
 }
 
 /** 差分の片側（変更前または変更後）を、変更箇所を強調して描画する。 */
-function renderSide(diff: DiffSegment[], side: "before" | "after"): HTMLElement {
+export function renderSide(diff: DiffSegment[], side: "before" | "after"): HTMLElement {
   const skip = side === "before" ? "insert" : "delete";
   const pre = h("pre", { class: `diff-text diff-${side}` });
   for (const seg of diff) {
@@ -478,14 +478,72 @@ export class ChatPanel {
         h(
           "div", { class: "proposal-actions" },
           h("button", { type: "button", class: "primary", onclick: () => void this.decide(message, p, "approve") }, "承認して反映"),
+          p.op !== "delete_element"
+            ? h("button", { type: "button", onclick: () => void this.decideEdited(message, p) }, "修正して採用")
+            : null,
           h("button", { type: "button", onclick: () => void this.decide(message, p, "reject") }, "却下"),
         ),
       );
     } else {
-      const label = STATUS_LABELS[p.status] ?? p.status;
+      const label = p.final_content ? "修正して採用しました" : STATUS_LABELS[p.status] ?? p.status;
       card.append(h("p", { class: `proposal-status status-${p.status}` }, p.reject_reason ? `${label} — 理由: ${p.reject_reason}` : label));
     }
     return card;
+  }
+
+  /** 提案の内容を修正するダイアログ。キャンセルした場合は null。 */
+  private askEdit(p: Proposal): Promise<ProposalContent | null> {
+    const after = p.after ?? {};
+    const isFile = p.op === "update_file" || p.op === "create_file";
+    return openDialog<ProposalContent>((close) => {
+      const body = h("textarea", { class: "field edit-body", rows: 8, value: (isFile ? after.content : after.body) ?? "" });
+      const speaker = h("input", { type: "text", class: "field", maxLength: 100, value: after.speaker ?? "" });
+      const name = h("input", { type: "text", class: "field", maxLength: 200, value: after.name ?? "" });
+      setTimeout(() => body.focus());
+      return h(
+        "form",
+        {
+          onsubmit: (e: Event) => {
+            e.preventDefault();
+            close(
+              isFile
+                ? { name: name.value.trim() || after.name, content: body.value }
+                : { kind: after.kind, speaker: speaker.value.trim(), body: body.value },
+            );
+          },
+        },
+        h("h2", {}, "提案を修正して採用"),
+        h("p", { class: "hint" }, "修正した内容が反映されます。AI の提案との違いは、執筆嗜好の分析に使われます。"),
+        p.op === "create_file" ? h("label", { class: "form-row" }, h("span", {}, "ファイル名"), name) : null,
+        !isFile && (after.kind === "Dialogue" || after.kind === "CharacterAction" || after.speaker)
+          ? h("label", { class: "form-row" }, h("span", {}, "キャラクター名"), speaker)
+          : null,
+        h("label", { class: "form-row" }, h("span", {}, isFile ? "ファイルの内容" : `${kindLabel(after.kind ?? "")}の本文`), body),
+        h(
+          "div", { class: "dialog-actions" },
+          h("button", { type: "button", onclick: () => close(null) }, "キャンセル"),
+          h("button", { type: "submit", class: "primary" }, "この内容で反映"),
+        ),
+      );
+    });
+  }
+
+  private async decideEdited(message: ChatMessage, p: Proposal): Promise<void> {
+    await this.guard(async () => {
+      const content = await this.askEdit(p);
+      if (!content) return;
+      if (!(await this.options.flushEditors())) {
+        throw new Error("編集中の内容を保存できていません。競合やエラーを解消してから承認してください");
+      }
+      try {
+        const updated = await api.approveProposalEdited(p.id, content);
+        message.proposals = message.proposals.map((x) => (x.id === updated.id ? updated : x));
+        if (updated.status === "approved") await this.options.onApplied(updated);
+        if (updated.status === "stale") toast("提案の後に対象が変更または削除されたため、反映しませんでした", "error");
+      } finally {
+        this.renderMessages();
+      }
+    });
   }
 
   /** 却下理由を尋ねる（任意）。キャンセルした場合は null。 */

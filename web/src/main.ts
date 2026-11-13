@@ -6,6 +6,8 @@ import { api } from "./api";
 import { ChatPanel } from "./chat";
 import { askConfirm, askProject, askText, h, openMenu, toast, type MenuItem } from "./dom";
 import { FileEditor } from "./fileEditor";
+import { HistoryView } from "./historyView";
+import { PreferencesView } from "./preferencesView";
 import { SceneEditor, type SaveState, type SceneEditorOptions } from "./sceneEditor";
 import { TEMPLATE_LABELS, type Meta, type Project, type ProjectTree, type ReferenceFile } from "./types";
 
@@ -25,7 +27,8 @@ let projects: Project[] = [];
 let tree: ProjectTree | null = null;
 let files: ReferenceFile[] = [];
 /** 本文領域に表示しているもの。 */
-let view: "scene" | "file" = "scene";
+type View = "scene" | "file" | "history" | "prefs";
+let view: View = "scene";
 const saveStates: Record<"scene" | "file", { state: SaveState; message?: string }> = {
   scene: { state: "saved" },
   file: { state: "saved" },
@@ -36,7 +39,10 @@ const status = h("span", { class: "status", role: "status" });
 const nav = h("nav", { class: "nav", "aria-label": "章と場面" });
 const sceneHost = h("div", { class: "editor-host" });
 const fileHost = h("div", { class: "editor-host", hidden: true });
-const main = h("main", { class: "main" }, sceneHost, fileHost);
+const historyHost = h("div", { class: "editor-host", hidden: true });
+const prefsHost = h("div", { class: "editor-host", hidden: true });
+const main = h("main", { class: "main" }, sceneHost, fileHost, historyHost, prefsHost);
+const historyButton = h("button", { type: "button" }, "履歴");
 const chatHost = h("aside", { class: "chat", "aria-label": "AI チャット" });
 const chatToggle = h("button", { type: "button", "aria-pressed": "true", "aria-label": "AI チャットを開閉" }, "AI");
 const navToggle = h("button", { type: "button", class: "icon", "aria-label": "章と場面の一覧を開閉" }, "☰");
@@ -50,6 +56,7 @@ const shell = h(
     h("span", { class: "brand" }, "Scenote"),
     projectSelect,
     settingsButton,
+    historyButton,
     exportButton,
     status,
     chatToggle,
@@ -58,7 +65,8 @@ const shell = h(
 );
 
 function showSaveState(): void {
-  const { state, message } = saveStates[view];
+  // 履歴・嗜好の画面では、裏で開いている場面の保存状態を表示する。
+  const { state, message } = saveStates[view === "file" ? "file" : "scene"];
   status.textContent = STATE_LABELS[state];
   status.className = `status status-${state}`;
   status.title = message ?? "";
@@ -109,11 +117,43 @@ async function showAiSettings(): Promise<void> {
   if (await openAiSettings()) await chat.refreshUsage();
 }
 
-function setView(next: "scene" | "file"): void {
+function setView(next: View): void {
   view = next;
   sceneHost.hidden = next !== "scene";
   fileHost.hidden = next !== "file";
+  historyHost.hidden = next !== "history";
+  prefsHost.hidden = next !== "prefs";
+  historyButton.setAttribute("aria-pressed", String(next === "history"));
   showSaveState();
+}
+
+const historyView = new HistoryView(historyHost, {
+  currentSceneId: () => editor.sceneId,
+  flushEditors,
+  onRestored: async () => {
+    await fileEditor.open(null);
+    await refreshTree();
+    await refreshFiles();
+    const ids = allSceneIds();
+    const current = editor.sceneId;
+    await editor.open(current && ids.includes(current) ? current : (ids[0] ?? null));
+  },
+});
+const preferencesView = new PreferencesView(prefsHost);
+
+/** 場面・参照ファイル以外の画面（履歴・嗜好）を開く。編集中の内容は先に保存する。 */
+async function openPanel(next: "history" | "prefs"): Promise<void> {
+  if (!tree) return;
+  if (!(await flushEditors())) {
+    toast("編集中の内容を保存できていません。競合やエラーを解消してからやり直してください", "error");
+    return;
+  }
+  if (!(await fileEditor.open(null))) return;
+  setView(next);
+  if (next === "history") await historyView.open(tree.project.id);
+  else await preferencesView.open(tree.project.id, projects);
+  renderNav();
+  shell.classList.remove("nav-open");
 }
 
 function report(e: unknown): void {
@@ -147,6 +187,7 @@ function renderProjectSelect(): void {
   );
   const has = tree !== null;
   settingsButton.disabled = !has;
+  historyButton.disabled = !has;
   exportButton.disabled = !has;
 }
 
@@ -397,6 +438,19 @@ function renderNav(): void {
       }, file.name, file.pinned ? h("span", { class: "pin", title: "常に AI に参照させる" }, " 常時") : null),
     );
   });
+  const prefsActive = view === "prefs";
+  const prefsSection = h(
+    "section", { class: "chapter files" },
+    h("ul", {}, h(
+      "li", { class: prefsActive ? "scene-item active" : "scene-item" },
+      h("button", {
+        type: "button",
+        class: "scene-link",
+        "aria-current": prefsActive ? "true" : undefined,
+        onclick: () => void run(() => openPanel("prefs")),
+      }, "執筆の嗜好"),
+    )),
+  );
   const fileSection = h(
     "section", { class: "chapter files" },
     h("div", { class: "chapter-head" }, h("h2", {}, "参照ファイル")),
@@ -427,6 +481,7 @@ function renderNav(): void {
       }),
     }, "＋ 章"),
     fileSection,
+    prefsSection,
   );
 }
 
@@ -441,6 +496,10 @@ projectSelect.addEventListener("change", () => {
 });
 
 navToggle.addEventListener("click", () => shell.classList.toggle("nav-open"));
+historyButton.addEventListener("click", () => void run(async () => {
+  if (view === "history") await selectScene(editor.sceneId ?? allSceneIds()[0] ?? null);
+  else await openPanel("history");
+}));
 chatToggle.addEventListener("click", () => {
   const hidden = shell.classList.toggle("chat-closed");
   chatToggle.setAttribute("aria-pressed", String(!hidden));

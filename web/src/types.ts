@@ -124,6 +124,8 @@ export interface Proposal {
   status: ProposalStatus;
   reject_reason: string;
   result_id: string | null;
+  /** 人間が修正して採用した場合の、実際に反映した内容。 */
+  final_content: ProposalContent | null;
   diff: DiffSegment[];
 }
 
@@ -180,3 +182,93 @@ export interface Exchange {
   messages: ChatMessage[];
   usage: UsageStatus;
 }
+
+// ---- Phase 3: 編集履歴・スナップショット・嗜好 ----
+
+export interface HistoryEntry {
+  seq: number;
+  scene_id: string | null;
+  target_type: "element" | "file" | "scene" | "project";
+  target_id: string;
+  action: "create" | "update" | "delete" | "reorder" | "restore";
+  actor: "human" | "ai_approved" | "ai_modified" | "restore";
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  proposal_id: string | null;
+  created_at: string;
+  updated_at: string;
+  diff: DiffSegment[];
+}
+
+export interface SnapshotInfo {
+  id: string;
+  project_id: string;
+  note: string;
+  kind: "manual" | "before_restore";
+  created_at: string;
+  scene_count: number;
+  element_count: number;
+  file_count: number;
+}
+
+export interface CompareItem {
+  item_type: "scene" | "file";
+  id: string;
+  title: string;
+  status: "added" | "removed" | "changed";
+  diff: DiffSegment[];
+}
+
+export interface PreferenceRule {
+  id: string;
+  project_id: string | null;
+  text: string;
+  category: string;
+  confidence: number;
+  evidence: string[];
+  source: "user" | "ai" | "copied";
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PreferenceSuggestion {
+  id: string;
+  project_id: string;
+  op: "add" | "update" | "remove";
+  rule_id: string | null;
+  rule_text: string | null;
+  text: string;
+  category: string;
+  confidence: number;
+  evidence: string[];
+  reason: string;
+  status: "pending" | "approved" | "rejected" | "stale";
+}
+
+export interface PreferenceProfile {
+  global_rules: PreferenceRule[];
+  project_rules: PreferenceRule[];
+  suggestions: PreferenceSuggestion[];
+  settings: { auto_update: boolean; include_direct_edits: boolean };
+  unanalyzed: number;
+}
+
+export interface AnalysisResult {
+  summary: string;
+  suggestions: PreferenceSuggestion[];
+  applied: boolean;
+  warnings: string[];
+  profile: PreferenceProfile;
+}
+
+export const CATEGORY_LABELS: Record<string, string> = {
+  style: "文体",
+  vocabulary: "語彙",
+  length: "文章の長さ",
+  avoid: "避けたい表現",
+  balance: "台詞と地の文",
+  tempo: "テンポ",
+  character: "キャラクターの話し方",
+  density: "演出・説明の密度",
+  other: "その他",
+};

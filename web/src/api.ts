@@ -1,7 +1,15 @@
 // HTTP API クライアント。画面側はここを通してのみサーバーと通信する。
 
 import type {
+  AnalysisResult,
   Chat,
+  CompareItem,
+  HistoryEntry,
+  PreferenceProfile,
+  PreferenceRule,
+  PreferenceSuggestion,
+  ProposalContent,
+  SnapshotInfo,
   ChatDetail,
   ElementResult,
   Exchange,
@@ -131,6 +139,47 @@ export const api = {
   ) => request<Exchange>("POST", `/chats/${chatId}/messages`, input),
   approveProposal: (id: string) => request<Proposal>("POST", `/proposals/${id}/approve`, {}),
   rejectProposal: (id: string, reason: string) => request<Proposal>("POST", `/proposals/${id}/reject`, { reason }),
+
+  approveProposalEdited: (id: string, content: ProposalContent) =>
+    request<Proposal>("POST", `/proposals/${id}/approve-edited`, { content }),
+
+  getHistory: (projectId: string, options: { sceneId?: string; before?: number; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (options.sceneId) q.set("scene_id", options.sceneId);
+    if (options.before !== undefined) q.set("before", String(options.before));
+    q.set("limit", String(options.limit ?? 50));
+    return request<HistoryEntry[]>("GET", `/projects/${projectId}/history?${q}`);
+  },
+  getHistorySettings: () => request<{ max_entries: number }>("GET", "/settings/history"),
+  updateHistorySettings: (maxEntries: number) =>
+    request<{ max_entries: number }>("PUT", "/settings/history", { max_entries: maxEntries }),
+  listSnapshots: (projectId: string) => request<SnapshotInfo[]>("GET", `/projects/${projectId}/snapshots`),
+  createSnapshot: (projectId: string, note: string) =>
+    request<SnapshotInfo>("POST", `/projects/${projectId}/snapshots`, { note }),
+  deleteSnapshot: (id: string) => request<void>("DELETE", `/snapshots/${id}`),
+  compareSnapshot: (id: string) => request<CompareItem[]>("GET", `/snapshots/${id}/compare`),
+  restoreSnapshot: (id: string) => request<SnapshotInfo>("POST", `/snapshots/${id}/restore`, {}),
+
+  getPreferences: (projectId: string) => request<PreferenceProfile>("GET", `/projects/${projectId}/preferences`),
+  analyzePreferences: (projectId: string) =>
+    request<AnalysisResult>("POST", `/projects/${projectId}/preferences/analyze`, {}),
+  importPreferences: (projectId: string, sourceProjectId: string) =>
+    request<{ copied: number }>("POST", `/projects/${projectId}/preferences/import`, { source_project_id: sourceProjectId }),
+  createRule: (projectId: string | null, text: string, category: string) =>
+    request<PreferenceRule>(
+      "POST",
+      projectId ? `/projects/${projectId}/preferences/rules` : "/preferences/global/rules",
+      { text, category },
+    ),
+  updateRule: (id: string, patch: { text?: string; category?: string; confidence?: number }) =>
+    request<PreferenceRule>("PATCH", `/preferences/rules/${id}`, patch),
+  deleteRule: (id: string) => request<void>("DELETE", `/preferences/rules/${id}`),
+  copyRule: (id: string, projectId: string | null) =>
+    request<{ copied: number }>("POST", `/preferences/rules/${id}/copy`, projectId ? { project_id: projectId } : {}),
+  approveSuggestion: (id: string) => request<PreferenceSuggestion>("POST", `/preferences/suggestions/${id}/approve`, {}),
+  rejectSuggestion: (id: string) => request<PreferenceSuggestion>("POST", `/preferences/suggestions/${id}/reject`, {}),
+  updatePreferenceSettings: (patch: { auto_update?: boolean; include_direct_edits?: boolean }) =>
+    request<{ auto_update: boolean; include_direct_edits: boolean }>("PUT", "/settings/preferences", patch),
 
   getLlmSettings: () => request<LlmSettings>("GET", "/settings/llm"),
   getGeminiModels: () => request<LlmModel[]>("GET", "/settings/llm/models"),
