@@ -14,6 +14,11 @@
   --k-action: #3d8a55;
   --k-direction: #a8741a;
   --k-choice: #8a4fa8;
+  --syn-heading: #0550ae;
+  --syn-link: #0969da;
+  --syn-mark: #8c959f;
+  --syn-code: #953800;
+  --syn-quote: #57606a;
   font-family: "Hiragino Sans", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
   font-size: 16px;
   line-height: 1.6;
@@ -35,6 +40,11 @@
     --k-action: #6fc48a;
     --k-direction: #dba54a;
     --k-choice: #c08be0;
+    --syn-heading: #79c0ff;
+    --syn-link: #58a6ff;
+    --syn-mark: #6e7681;
+    --syn-code: #ffa657;
+    --syn-quote: #9198a1;
   }
 }
 
@@ -192,18 +202,21 @@ button.icon { min-width: 36px; padding: 4px; border-color: transparent; backgrou
 .chip { --kind: var(--k-narration); border-color: var(--kind); color: var(--kind); background: transparent; border-radius: 18px; font-size: 0.9rem; }
 
 .source {
-  display: block;
-  width: 100%;
-  min-height: 60vh;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface);
-  padding: 12px;
+}
+.source:focus-within { border-color: var(--accent); }
+.source .cm-editor { min-height: 60vh; }
+.source .cm-editor.cm-focused { outline: none; }
+.source .cm-scroller {
   font-family: "Cascadia Mono", "Consolas", "SF Mono", ui-monospace, "Yu Gothic UI", monospace;
   font-size: 0.95rem;
   line-height: 1.7;
-  resize: vertical;
 }
+.source .cm-content { padding: 12px; caret-color: var(--text); }
+.source .cm-cursor { border-left-color: var(--text); }
+.source .cm-placeholder { color: var(--muted); }
 .hint { color: var(--muted); font-size: 0.85rem; }
 .hint code { background: var(--hover); border-radius: 4px; padding: 1px 4px; }
 

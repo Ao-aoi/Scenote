@@ -13,11 +13,11 @@ use crate::error::{AppError, Result};
 use crate::markdown::{self, ChapterDoc, ProjectDoc, SceneDoc};
 use crate::model::*;
 
-const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
+pub(crate) const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 const MAX_TITLE_CHARS: usize = 200;
 
 pub struct Store {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 #[derive(Debug, Default)]
@@ -34,11 +34,11 @@ pub struct ElementPatch {
     pub body: Option<String>,
 }
 
-fn new_id() -> String {
+pub(crate) fn new_id() -> String {
     Uuid::new_v4().to_string()
 }
 
-fn clean_title(what: &str, title: &str) -> Result<String> {
+pub(crate) fn clean_title(what: &str, title: &str) -> Result<String> {
     let title = title.trim();
     if title.is_empty() {
         return Err(AppError::Invalid(format!("{what}を入力してください")));
@@ -67,7 +67,7 @@ fn clean_templates(templates: &[String]) -> Result<Vec<String>> {
     Ok(out)
 }
 
-fn clean_content(content: ElementContent) -> Result<ElementContent> {
+pub(crate) fn clean_content(content: ElementContent) -> Result<ElementContent> {
     if !is_valid_kind(&content.kind) {
         return Err(AppError::Invalid(
             "要素の種類は英字で始まる英数字で指定してください".into(),
@@ -119,7 +119,7 @@ fn scene_from_row(row: &Row) -> rusqlite::Result<Scene> {
     })
 }
 
-fn element_from_row(row: &Row) -> rusqlite::Result<Element> {
+pub(crate) fn element_from_row(row: &Row) -> rusqlite::Result<Element> {
     let attrs: String = row.get("attrs")?;
     Ok(Element {
         id: row.get("id")?,
@@ -174,6 +174,12 @@ impl Store {
             let tx = self.conn.transaction()?;
             tx.execute_batch(include_str!("schema_v1.sql"))?;
             tx.pragma_update(None, "user_version", 1)?;
+            tx.commit()?;
+        }
+        if version < 2 {
+            let tx = self.conn.transaction()?;
+            tx.execute_batch(include_str!("schema_v2.sql"))?;
+            tx.pragma_update(None, "user_version", 2)?;
             tx.commit()?;
         }
         Ok(())
@@ -423,7 +429,7 @@ impl Store {
             "UPDATE elements SET position = position + 1 WHERE scene_id = ?1 AND position >= ?2",
             params![scene_id, position],
         )?;
-        let id = insert_element(&tx, scene_id, &content, position)?;
+        let id = insert_element(&tx, scene_id, &content, position, ORIGIN_HUMAN)?;
         touch_scene(&tx, scene_id)?;
         tx.commit()?;
         self.get_element(&id)
@@ -442,13 +448,14 @@ impl Store {
                 current: current.revision,
             });
         }
+        let origin = origin_after_human_edit(&current.origin);
         let content = clean_content(ElementContent {
             kind: patch.kind.unwrap_or(current.kind),
             speaker: patch.speaker.unwrap_or(current.speaker),
             body: patch.body.unwrap_or(current.body),
         })?;
         let tx = self.conn.transaction()?;
-        update_element_content(&tx, id, &content)?;
+        update_element_content(&tx, id, &content, origin)?;
         touch_scene(&tx, &current.scene_id)?;
         tx.commit()?;
         self.get_element(id)
@@ -513,7 +520,8 @@ impl Store {
                     let existing = &old[*i];
                     used.insert(existing.id.as_str());
                     if old_contents[*i] != new[new_index] {
-                        update_element_content(&tx, &existing.id, &new[new_index])?;
+                        let origin = origin_after_human_edit(&existing.origin);
+                        update_element_content(&tx, &existing.id, &new[new_index], origin)?;
                     }
                     tx.execute(
                         "UPDATE elements SET position = ?2 WHERE id = ?1",
@@ -521,7 +529,7 @@ impl Store {
                     )?;
                 }
                 None => {
-                    insert_element(&tx, scene_id, &new[new_index], position)?;
+                    insert_element(&tx, scene_id, &new[new_index], position, ORIGIN_HUMAN)?;
                 }
             }
         }
@@ -581,11 +589,21 @@ impl Store {
             "exported_at": exported_at,
             "project": tree.project,
             "chapters": chapters,
+            "reference_files": self.list_files(project_id)?,
         }))
     }
 }
 
-fn content_of(e: &Element) -> ElementContent {
+/// 人間が直接編集した後の由来。AI 由来の要素は「混在」になる。
+fn origin_after_human_edit(current: &str) -> &'static str {
+    if current == ORIGIN_HUMAN {
+        ORIGIN_HUMAN
+    } else {
+        ORIGIN_MIXED
+    }
+}
+
+pub(crate) fn content_of(e: &Element) -> ElementContent {
     ElementContent {
         kind: e.kind.clone(),
         speaker: e.speaker.clone(),
@@ -627,11 +645,12 @@ fn insert_scene(tx: &Transaction, chapter_id: &str, title: &str) -> Result<Strin
     Ok(id)
 }
 
-fn insert_element(
+pub(crate) fn insert_element(
     tx: &Transaction,
     scene_id: &str,
     content: &ElementContent,
     position: i64,
+    origin: &str,
 ) -> Result<String> {
     let id = new_id();
     tx.execute(
@@ -639,24 +658,30 @@ fn insert_element(
             "INSERT INTO elements (id, scene_id, kind, body, speaker, position, origin, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, {NOW}, {NOW})"
         ),
-        params![id, scene_id, content.kind, content.body, content.speaker, position, ORIGIN_HUMAN],
+        params![id, scene_id, content.kind, content.body, content.speaker, position, origin],
     )?;
     Ok(id)
 }
 
-fn update_element_content(tx: &Transaction, id: &str, content: &ElementContent) -> Result<()> {
+/// 要素の内容を書き換える。`origin` は書き換え後の由来。
+pub(crate) fn update_element_content(
+    tx: &Transaction,
+    id: &str,
+    content: &ElementContent,
+    origin: &str,
+) -> Result<()> {
     tx.execute(
         &format!(
-            "UPDATE elements SET kind = ?2, speaker = ?3, body = ?4,
+            "UPDATE elements SET kind = ?2, speaker = ?3, body = ?4, origin = ?5,
                     revision = revision + 1, updated_at = {NOW}
              WHERE id = ?1"
         ),
-        params![id, content.kind, content.speaker, content.body],
+        params![id, content.kind, content.speaker, content.body, origin],
     )?;
     Ok(())
 }
 
-fn touch_project(tx: &Transaction, project_id: &str) -> Result<()> {
+pub(crate) fn touch_project(tx: &Transaction, project_id: &str) -> Result<()> {
     tx.execute(
         &format!("UPDATE projects SET updated_at = {NOW} WHERE id = ?1"),
         [project_id],
@@ -665,7 +690,7 @@ fn touch_project(tx: &Transaction, project_id: &str) -> Result<()> {
 }
 
 /// 場面のリビジョンを進め、所属プロジェクトの更新日時も更新する。
-fn touch_scene(tx: &Transaction, scene_id: &str) -> Result<()> {
+pub(crate) fn touch_scene(tx: &Transaction, scene_id: &str) -> Result<()> {
     tx.execute(
         &format!("UPDATE scenes SET revision = revision + 1, updated_at = {NOW} WHERE id = ?1"),
         [scene_id],
@@ -697,7 +722,7 @@ fn write_positions(tx: &Transaction, table: &str, ids: &[String]) -> Result<()> 
 }
 
 /// 削除後に順序を 0 からの連番へ詰め直す。
-fn renumber(tx: &Transaction, table: &str, parent_col: &str, parent_id: &str) -> Result<()> {
+pub(crate) fn renumber(tx: &Transaction, table: &str, parent_col: &str, parent_id: &str) -> Result<()> {
     let ids = child_ids(tx, table, parent_col, parent_id)?;
     write_positions(tx, table, &ids)
 }

@@ -1,7 +1,9 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use scenote::api::{self, AppState};
+use scenote::llm::GeminiProvider;
 use scenote::store::Store;
 
 fn env_or(name: &str, default: &str) -> String {
@@ -35,7 +37,10 @@ async fn main() {
         );
     }
 
-    let app = api::router(AppState::new(store), Some(&web_dir));
+    // API キーは環境変数 GEMINI_API_KEY、または画面の「AI 設定」から登録する（PC 側にのみ保存）。
+    let env_api_key = std::env::var("GEMINI_API_KEY").ok();
+    let state = AppState::new(store, Arc::new(GeminiProvider::new()), env_api_key);
+    let app = api::router(state, Some(&web_dir));
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(listener) => listener,
         Err(e) => {

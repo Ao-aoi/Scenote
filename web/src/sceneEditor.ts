@@ -107,6 +107,7 @@ export class SceneEditor {
   private savers: AutoSaver[] = [];
   private loadToken = 0;
   private busy = false;
+  private disposeSource: (() => void) | null = null;
 
   constructor(
     private readonly root: HTMLElement,
@@ -195,6 +196,8 @@ export class SceneEditor {
     const scene = this.scene;
     if (!scene) return;
     this.savers = [];
+    this.disposeSource?.();
+    this.disposeSource = null;
 
     const title = h("input", {
       class: "scene-title",
@@ -475,18 +478,28 @@ export class SceneEditor {
     const source = await api.getSceneMarkdown(scene.id);
     if (this.scene !== scene) return;
     let revision = source.revision;
-    const textarea = h("textarea", {
-      class: "source",
-      value: source.markdown,
-      spellcheck: false,
-      "aria-label": "場面の Markdown ソース",
-      placeholder: "地の文はそのまま書きます。\n\n**アリス**: 台詞はこのように書きます。\n\n[演出] 空行で区切ると別の要素になります。",
+    const { SourceEditor } = await import("./sourceEditor");
+    if (this.scene !== scene) return;
+    let suppress = false;
+    const host = h("div", { class: "source" });
+    const sourceEditor = new SourceEditor({
+      parent: host,
+      text: source.markdown,
+      ariaLabel: "場面の Markdown ソース",
+      placeholder: "地の文はそのまま書きます。空行で区切ると別の要素になります。",
+      onEdit: () => {
+        if (!suppress) saver.touch();
+      },
+      onBlur: () => {
+        if (saver.dirty && !saver.conflict) void saver.flush();
+      },
     });
+    this.disposeSource = () => sourceEditor.destroy();
     const notice = h("div", { class: "block-notice" });
     const saver = new AutoSaver(
       MARKDOWN_SAVE_DELAY,
       async () => {
-        const detail = await api.putSceneMarkdown(scene.id, revision, textarea.value);
+        const detail = await api.putSceneMarkdown(scene.id, revision, sourceEditor.text);
         revision = detail.revision;
         scene.revision = detail.revision;
         scene.elements = detail.elements;
@@ -526,7 +539,9 @@ export class SceneEditor {
             type: "button",
             onclick: () => {
               revision = latest.revision;
-              textarea.value = latest.markdown;
+              suppress = true;
+              sourceEditor.setText(latest.markdown);
+              suppress = false;
               notice.replaceChildren();
               saver.resolve(false);
             },
@@ -535,13 +550,9 @@ export class SceneEditor {
       );
     };
 
-    textarea.addEventListener("input", () => saver.touch());
-    textarea.addEventListener("blur", () => {
-      if (saver.dirty && !saver.conflict) void saver.flush();
-    });
     body.append(
       notice,
-      textarea,
+      host,
       h(
         "p", { class: "hint" },
         "空行で区切った 1 かたまりが 1 つの要素になります。",

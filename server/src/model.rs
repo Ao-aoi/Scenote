@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// DB スキーマおよび JSON エクスポート形式のバージョン。
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 pub const KIND_DIALOGUE: &str = "Dialogue";
 pub const KIND_NARRATION: &str = "Narration";
@@ -26,8 +26,12 @@ pub const BASIC_KINDS: [&str; 5] = [
 /// プロジェクト作成時に選択できるテンプレート（複数選択可）。
 pub const TEMPLATES: [&str; 5] = ["linear_adv", "choice_adv", "status_adv", "rpg_sim", "other"];
 
-/// 編集の由来。Phase 1 では人間による作成のみだが、AI 提案の導入に備えて保持する。
+/// 編集の由来: 人間が作成・編集した内容。
 pub const ORIGIN_HUMAN: &str = "human";
+/// AI の提案をそのまま承認して反映した内容。
+pub const ORIGIN_AI_APPROVED: &str = "ai_approved";
+/// AI 由来の内容を人間が編集したもの。
+pub const ORIGIN_MIXED: &str = "mixed";
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Project {

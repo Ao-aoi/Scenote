@@ -10,7 +10,8 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 fn app() -> Router {
-    router(AppState::new(Store::open_in_memory().unwrap()), None)
+    let provider = std::sync::Arc::new(scenote::llm::GeminiProvider::new());
+    router(AppState::new(Store::open_in_memory().unwrap(), provider, None), None)
 }
 
 async fn call(app: &Router, method: &str, path: &str, body: Option<Value>) -> (StatusCode, String) {

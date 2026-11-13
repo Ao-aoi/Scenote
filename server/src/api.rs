@@ -14,17 +14,27 @@ use tower_http::services::{ServeDir, ServeFile};
 
 use crate::error::{AppError, Result};
 use crate::model::*;
+use crate::assistant::{self, Exchange, SendRequest};
+use crate::llm::LlmProvider;
 use crate::store::{ElementPatch, ProjectPatch, Store};
+use crate::store_ai::{
+    Chat, ChatDetail, ChatPatch, FilePatch, LlmSettings, Proposal, ReferenceFile, UsageStatus,
+};
 
 #[derive(Clone)]
 pub struct AppState {
     store: Arc<Mutex<Store>>,
+    provider: Arc<dyn LlmProvider>,
+    /// 環境変数で与えられた API キー（設定画面での登録より優先する）。
+    env_api_key: Option<Arc<str>>,
 }
 
 impl AppState {
-    pub fn new(store: Store) -> Self {
+    pub fn new(store: Store, provider: Arc<dyn LlmProvider>, env_api_key: Option<String>) -> Self {
         AppState {
             store: Arc::new(Mutex::new(store)),
+            provider,
+            env_api_key: env_api_key.filter(|k| !k.trim().is_empty()).map(Arc::from),
         }
     }
 
@@ -40,6 +50,8 @@ impl IntoResponse for AppError {
             AppError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
             AppError::Invalid(_) => (StatusCode::BAD_REQUEST, "invalid"),
             AppError::Conflict { .. } => (StatusCode::CONFLICT, "conflict"),
+            AppError::Llm(_) => (StatusCode::BAD_GATEWAY, "llm"),
+            AppError::LlmStopped => (StatusCode::TOO_MANY_REQUESTS, "llm_stopped"),
             AppError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         };
         if let AppError::Internal(detail) = &self {
@@ -78,6 +90,16 @@ pub fn router(state: AppState, web_dir: Option<&FsPath>) -> Router {
         .route("/scenes/{id}/elements/order", put(reorder_elements))
         .route("/scenes/{id}/markdown", get(scene_markdown).put(replace_scene_markdown))
         .route("/elements/{id}", patch(update_element).delete(delete_element))
+        .route("/projects/{id}/files", get(list_files).post(create_file))
+        .route("/files/{id}", get(get_file).patch(update_file).delete(delete_file))
+        .route("/projects/{id}/chats", get(list_chats).post(create_chat))
+        .route("/chats/{id}", get(chat_detail).patch(update_chat).delete(delete_chat))
+        .route("/chats/{id}/messages", post(send_message))
+        .route("/proposals/{id}/approve", post(approve_proposal))
+        .route("/proposals/{id}/reject", post(reject_proposal))
+        .route("/settings/llm", get(llm_settings).put(update_llm_settings))
+        .route("/usage", get(usage))
+        .route("/usage/resume", post(resume_usage))
         .fallback(|| async { AppError::NotFound("API") })
         .with_state(state);
 
@@ -347,4 +369,195 @@ async fn export_json(State(s): State<AppState>, Path(id): Path<String>) -> Resul
     let name = store.get_project(&id)?.name;
     let body = serde_json::to_string_pretty(&store.export_json(&id)?)?;
     Ok(attachment(&name, "json", "application/json; charset=utf-8", body))
+}
+
+// ---- 参照ファイル -----------------------------------------------------
+
+#[derive(Deserialize)]
+struct CreateFile {
+    name: String,
+    #[serde(default)]
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct UpdateFile {
+    base_revision: i64,
+    name: Option<String>,
+    content: Option<String>,
+    pinned: Option<bool>,
+}
+
+async fn list_files(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<Vec<ReferenceFile>>> {
+    let store = s.store();
+    store.get_project(&id)?;
+    Ok(Json(store.list_files(&id)?))
+}
+
+async fn create_file(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<CreateFile>,
+) -> Result<(StatusCode, Json<ReferenceFile>)> {
+    let file = s.store().create_file(&id, &req.name, &req.content)?;
+    Ok((StatusCode::CREATED, Json(file)))
+}
+
+async fn get_file(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<ReferenceFile>> {
+    Ok(Json(s.store().get_file(&id)?))
+}
+
+async fn update_file(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateFile>,
+) -> Result<Json<ReferenceFile>> {
+    let patch = FilePatch {
+        name: req.name,
+        content: req.content,
+        pinned: req.pinned,
+    };
+    Ok(Json(s.store().update_file(&id, req.base_revision, patch)?))
+}
+
+async fn delete_file(State(s): State<AppState>, Path(id): Path<String>) -> Result<StatusCode> {
+    s.store().delete_file(&id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ---- チャット・提案 ---------------------------------------------------
+
+#[derive(Deserialize)]
+struct UpdateChat {
+    title: Option<String>,
+    instructions: Option<String>,
+    auto_select: Option<bool>,
+    file_ids: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+struct SendMessage {
+    content: String,
+    scene_id: Option<String>,
+    #[serde(default)]
+    include_file_ids: Vec<String>,
+    #[serde(default)]
+    exclude_file_ids: Vec<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct RejectBody {
+    #[serde(default)]
+    reason: String,
+}
+
+async fn list_chats(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<Vec<Chat>>> {
+    let store = s.store();
+    store.get_project(&id)?;
+    Ok(Json(store.list_chats(&id)?))
+}
+
+async fn create_chat(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<TitleBody>,
+) -> Result<(StatusCode, Json<Chat>)> {
+    Ok((StatusCode::CREATED, Json(s.store().create_chat(&id, &req.title)?)))
+}
+
+async fn chat_detail(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<ChatDetail>> {
+    Ok(Json(s.store().chat_detail(&id)?))
+}
+
+async fn update_chat(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateChat>,
+) -> Result<Json<Chat>> {
+    let patch = ChatPatch {
+        title: req.title,
+        instructions: req.instructions,
+        auto_select: req.auto_select,
+        file_ids: req.file_ids,
+    };
+    Ok(Json(s.store().update_chat(&id, patch)?))
+}
+
+async fn delete_chat(State(s): State<AppState>, Path(id): Path<String>) -> Result<StatusCode> {
+    s.store().delete_chat(&id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn send_message(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<SendMessage>,
+) -> Result<Json<Exchange>> {
+    let request = SendRequest {
+        content: req.content,
+        scene_id: req.scene_id,
+        include_file_ids: req.include_file_ids,
+        exclude_file_ids: req.exclude_file_ids,
+    };
+    let exchange = assistant::send_message(
+        &s.store,
+        s.provider.as_ref(),
+        s.env_api_key.as_deref(),
+        &id,
+        request,
+    )
+    .await?;
+    Ok(Json(exchange))
+}
+
+async fn approve_proposal(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<Proposal>> {
+    Ok(Json(s.store().approve_proposal(&id)?))
+}
+
+async fn reject_proposal(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    body: Option<Json<RejectBody>>,
+) -> Result<Json<Proposal>> {
+    let reason = body.map(|Json(b)| b.reason).unwrap_or_default();
+    Ok(Json(s.store().reject_proposal(&id, &reason)?))
+}
+
+// ---- AI 設定・使用量 --------------------------------------------------
+
+#[derive(Deserialize)]
+struct UpdateLlmSettings {
+    /// 省略時は変更なし、空文字で削除。応答には決して含めない。
+    api_key: Option<String>,
+    model: Option<String>,
+    monthly_token_limit: Option<i64>,
+    warn_percent: Option<i64>,
+}
+
+async fn llm_settings(State(s): State<AppState>) -> Result<Json<LlmSettings>> {
+    Ok(Json(s.store().llm_settings(s.env_api_key.is_some())?))
+}
+
+async fn update_llm_settings(
+    State(s): State<AppState>,
+    Json(req): Json<UpdateLlmSettings>,
+) -> Result<Json<LlmSettings>> {
+    let mut store = s.store();
+    store.update_llm_settings(
+        req.api_key.as_deref(),
+        req.model.as_deref(),
+        req.monthly_token_limit,
+        req.warn_percent,
+    )?;
+    Ok(Json(store.llm_settings(s.env_api_key.is_some())?))
+}
+
+async fn usage(State(s): State<AppState>) -> Result<Json<UsageStatus>> {
+    Ok(Json(s.store().usage_status()?))
+}
+
+async fn resume_usage(State(s): State<AppState>) -> Result<Json<UsageStatus>> {
+    let mut store = s.store();
+    store.resume_llm()?;
+    Ok(Json(store.usage_status()?))
 }
