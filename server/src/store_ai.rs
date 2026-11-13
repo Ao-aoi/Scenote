@@ -7,6 +7,10 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::diff::{diff_text, Segment};
+use crate::history::{
+    self as hist, file_value, record_element, ACTION_CREATE, ACTION_DELETE, ACTION_UPDATE, ACTOR_AI_APPROVED,
+    ACTOR_AI_MODIFIED, ACTOR_HUMAN, TARGET_FILE,
+};
 use crate::error::{AppError, Result};
 use crate::model::*;
 use crate::store::{
@@ -98,6 +102,8 @@ pub struct Proposal {
     pub status: String,
     pub reject_reason: String,
     pub result_id: Option<String>,
+    /// 人間が修正して採用した場合の、実際に反映した内容。
+    pub final_content: Option<Value>,
     /// 本文（要素の `body`、ファイルの `content`）の変更前後の差分。
     pub diff: Vec<Segment>,
     #[serde(skip)]
@@ -209,7 +215,10 @@ fn proposal_from_row(row: &Row) -> rusqlite::Result<Proposal> {
     } else {
         "body"
     };
-    let diff = diff_text(text_of(&before, key), text_of(&after, key));
+    // 修正して採用した場合は、実際に反映した内容との差分を示す。
+    let final_content = parse_json(row.get("final")?);
+    let shown = if final_content.is_some() { &final_content } else { &after };
+    let diff = diff_text(text_of(&before, key), text_of(shown, key));
     Ok(Proposal {
         id: row.get("id")?,
         message_id: row.get("message_id")?,
@@ -223,6 +232,7 @@ fn proposal_from_row(row: &Row) -> rusqlite::Result<Proposal> {
         status: row.get("status")?,
         reject_reason: row.get("reject_reason")?,
         result_id: row.get("result_id")?,
+        final_content,
         diff,
         project_id: row.get("project_id")?,
         ordinal: row.get("ordinal")?,
@@ -276,7 +286,11 @@ impl Store {
             ),
             params![id, project_id, name, content],
         )?;
-        self.get_file(&id)
+        let file = self.get_file(&id)?;
+        let tx = self.conn.transaction()?;
+        record_file(&tx, &file, ACTION_CREATE, ACTOR_HUMAN, None, Some(file_value(&file)), None)?;
+        tx.commit()?;
+        Ok(file)
     }
 
     pub fn update_file(&mut self, id: &str, base_revision: i64, patch: FilePatch) -> Result<ReferenceFile> {
@@ -288,13 +302,14 @@ impl Store {
         }
         let name = match patch.name {
             Some(n) => clean_title("ファイル名", &n)?,
-            None => current.name,
+            None => current.name.clone(),
         };
         let content = match patch.content {
             Some(c) => clean_file_content(c)?,
-            None => current.content,
+            None => current.content.clone(),
         };
-        self.conn.execute(
+        let tx = self.conn.transaction()?;
+        tx.execute(
             &format!(
                 "UPDATE reference_files SET name = ?2, content = ?3, pinned = ?4,
                         revision = revision + 1, updated_at = {NOW}
@@ -302,16 +317,18 @@ impl Store {
             ),
             params![id, name, content, patch.pinned.unwrap_or(current.pinned) as i64],
         )?;
-        self.get_file(id)
+        let updated = tx.query_row("SELECT * FROM reference_files WHERE id = ?1", [id], file_from_row)?;
+        record_file(&tx, &updated, ACTION_UPDATE, ACTOR_HUMAN, Some(file_value(&current)), Some(file_value(&updated)), None)?;
+        tx.commit()?;
+        Ok(updated)
     }
 
     pub fn delete_file(&mut self, id: &str) -> Result<()> {
-        let n = self
-            .conn
-            .execute("DELETE FROM reference_files WHERE id = ?1", [id])?;
-        if n == 0 {
-            return Err(AppError::NotFound("参照ファイル"));
-        }
+        let file = self.get_file(id)?;
+        let tx = self.conn.transaction()?;
+        record_file(&tx, &file, ACTION_DELETE, ACTOR_HUMAN, Some(file_value(&file)), None, None)?;
+        tx.execute("DELETE FROM reference_files WHERE id = ?1", [id])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -569,7 +586,27 @@ impl Store {
     ///
     /// 提案の生成後に対象が変更・削除されていた場合は反映せず、状態を `stale` にして返す。
     pub fn approve_proposal(&mut self, id: &str) -> Result<Proposal> {
-        let proposal = self.pending_proposal(id)?;
+        self.approve_proposal_with(id, None)
+    }
+
+    /// 提案を承認して反映する。`edited` を渡すと、提案の内容を人間が修正したものとして反映する
+    /// （由来は「AI 提案を人間が修正」）。修正できるのは変更・追加・ファイル変更・ファイル作成の提案。
+    pub fn approve_proposal_with(&mut self, id: &str, edited: Option<Value>) -> Result<Proposal> {
+        let mut proposal = self.pending_proposal(id)?;
+        let edited = match edited {
+            None => None,
+            Some(value) => Some(self.validate_edit(&proposal, value)?),
+        };
+        if let Some(value) = &edited {
+            if Some(value) == proposal.after.as_ref() {
+                // 内容が変わっていなければ、そのまま承認したものとして扱う。
+                return self.approve_proposal_with(id, None);
+            }
+            proposal.after = Some(value.clone());
+        }
+        let modified = edited.is_some();
+        let actor = if modified { ACTOR_AI_MODIFIED } else { ACTOR_AI_APPROVED };
+        let element_origin = if modified { ORIGIN_AI_MODIFIED } else { ORIGIN_AI_APPROVED };
         let tx = self.conn.transaction()?;
         let outcome: Option<Option<String>> = match proposal.op.as_str() {
             OP_UPDATE_ELEMENT | OP_DELETE_ELEMENT => {
@@ -579,11 +616,14 @@ impl Store {
                     .optional()?;
                 match current {
                     Some(e) if Some(e.revision) == proposal.base_revision => {
+                        let before = content_of(&e);
                         if proposal.op == OP_UPDATE_ELEMENT {
                             let content = clean_content(element_content_from(&proposal.after)?)?;
-                            update_element_content(&tx, &e.id, &content, ORIGIN_AI_APPROVED)?;
+                            update_element_content(&tx, &e.id, &content, element_origin)?;
+                            record_element(&tx, &e.scene_id, &e.id, ACTION_UPDATE, actor, Some(&before), Some(&content), Some(id))?;
                         } else {
                             tx.execute("DELETE FROM elements WHERE id = ?1", [&e.id])?;
+                            record_element(&tx, &e.scene_id, &e.id, ACTION_DELETE, actor, Some(&before), None, Some(id))?;
                             renumber(&tx, "elements", "scene_id", &e.scene_id)?;
                         }
                         touch_scene(&tx, &e.scene_id)?;
@@ -601,7 +641,8 @@ impl Store {
                             "UPDATE elements SET position = position + 1 WHERE scene_id = ?1 AND position >= ?2",
                             params![scene_id, position],
                         )?;
-                        let new_id = insert_element(&tx, scene_id, &content, position, ORIGIN_AI_APPROVED)?;
+                        let new_id = insert_element(&tx, scene_id, &content, position, element_origin)?;
+                        record_element(&tx, scene_id, &new_id, ACTION_CREATE, actor, None, Some(&content), Some(id))?;
                         touch_scene(&tx, scene_id)?;
                         Some(Some(new_id))
                     }
@@ -623,6 +664,8 @@ impl Store {
                             ),
                             params![f.id, content],
                         )?;
+                        let updated = tx.query_row("SELECT * FROM reference_files WHERE id = ?1", [&f.id], file_from_row)?;
+                        record_file(&tx, &updated, ACTION_UPDATE, actor, Some(file_value(&f)), Some(file_value(&updated)), Some(id))?;
                         Some(None)
                     }
                     _ => None,
@@ -639,6 +682,8 @@ impl Store {
                     ),
                     params![new_id, proposal.project_id, name, content],
                 )?;
+                let created = tx.query_row("SELECT * FROM reference_files WHERE id = ?1", [&new_id], file_from_row)?;
+                record_file(&tx, &created, ACTION_CREATE, actor, None, Some(file_value(&created)), Some(id))?;
                 Some(Some(new_id))
             }
             other => return Err(AppError::Internal(format!("unknown proposal op: {other}"))),
@@ -647,9 +692,9 @@ impl Store {
             Some(result_id) => {
                 tx.execute(
                     &format!(
-                        "UPDATE proposals SET status = ?2, result_id = ?3, decided_at = {NOW} WHERE id = ?1"
+                        "UPDATE proposals SET status = ?2, result_id = ?3, final = ?4, decided_at = {NOW} WHERE id = ?1"
                     ),
-                    params![id, STATUS_APPROVED, result_id],
+                    params![id, STATUS_APPROVED, result_id, edited.as_ref().map(Value::to_string)],
                 )?;
                 touch_project(&tx, &proposal.project_id)?;
             }
@@ -662,6 +707,34 @@ impl Store {
         }
         tx.commit()?;
         self.get_proposal(id)
+    }
+
+    /// 人間による修正内容を検証し、提案の `after` と同じ形の JSON にする。
+    fn validate_edit(&self, proposal: &Proposal, value: Value) -> Result<Value> {
+        match proposal.op.as_str() {
+            OP_UPDATE_ELEMENT | OP_INSERT_ELEMENT => {
+                let content: ElementContent = serde_json::from_value(value)
+                    .map_err(|_| AppError::Invalid("修正内容の形式が正しくありません".into()))?;
+                let content = clean_content(content)?;
+                Ok(serde_json::to_value(content)?)
+            }
+            OP_UPDATE_FILE | OP_CREATE_FILE => {
+                let content = value
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| AppError::Invalid("修正内容の形式が正しくありません".into()))?;
+                let content = clean_file_content(content.to_string())?;
+                let name = match proposal.op.as_str() {
+                    OP_CREATE_FILE => clean_title(
+                        "ファイル名",
+                        value.get("name").and_then(Value::as_str).unwrap_or(text_of(&proposal.after, "name")),
+                    )?,
+                    _ => text_of(&proposal.after, "name").to_string(),
+                };
+                Ok(json!({ "name": name, "content": content }))
+            }
+            _ => Err(AppError::Invalid("削除の提案は修正できません".into())),
+        }
     }
 
     // ---- 設定 ---------------------------------------------------------
@@ -918,4 +991,30 @@ fn insert_position(
 /// 要素の内容を提案用の JSON にする。
 pub fn element_json(e: &Element) -> Value {
     serde_json::to_value(content_of(e)).unwrap_or(Value::Null)
+}
+
+/// 参照ファイルの変更を履歴に記録する。
+fn record_file(
+    tx: &rusqlite::Transaction,
+    file: &ReferenceFile,
+    action: &str,
+    actor: &str,
+    before: Option<Value>,
+    after: Option<Value>,
+    proposal_id: Option<&str>,
+) -> Result<()> {
+    hist::record(
+        tx,
+        hist::Change {
+            project_id: &file.project_id,
+            scene_id: None,
+            target_type: TARGET_FILE,
+            target_id: &file.id,
+            action,
+            actor,
+            before,
+            after,
+            proposal_id,
+        },
+    )
 }

@@ -12,9 +12,11 @@
 pub mod api;
 pub mod assistant;
 pub mod error;
+pub mod history;
 pub mod llm;
 pub mod markdown;
 pub mod model;
+pub mod preferences;
 pub mod diff;
 pub mod store;
 pub mod store_ai;

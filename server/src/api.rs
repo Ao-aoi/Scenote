@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -15,7 +15,9 @@ use tower_http::services::{ServeDir, ServeFile};
 use crate::error::{AppError, Result};
 use crate::model::*;
 use crate::assistant::{self, Exchange, SendRequest};
+use crate::history::{CompareItem, HistoryEntry, SnapshotInfo, SNAPSHOT_MANUAL};
 use crate::llm::LlmProvider;
+use crate::preferences::{self, AnalysisResult, Profile, Rule, Suggestion};
 use crate::store::{ElementPatch, ProjectPatch, Store};
 use crate::store_ai::{
     Chat, ChatDetail, ChatPatch, FilePatch, LlmSettings, Proposal, ReferenceFile, UsageStatus,
@@ -99,6 +101,23 @@ pub fn router(state: AppState, web_dir: Option<&FsPath>) -> Router {
         .route("/proposals/{id}/reject", post(reject_proposal))
         .route("/settings/llm", get(llm_settings).put(update_llm_settings))
         .route("/settings/llm/models", get(llm_models))
+        .route("/proposals/{id}/approve-edited", post(approve_proposal_edited))
+        .route("/projects/{id}/history", get(project_history))
+        .route("/settings/history", get(history_settings).put(update_history_settings))
+        .route("/projects/{id}/snapshots", get(list_snapshots).post(create_snapshot))
+        .route("/snapshots/{id}", delete(delete_snapshot))
+        .route("/snapshots/{id}/compare", get(compare_snapshot))
+        .route("/snapshots/{id}/restore", post(restore_snapshot))
+        .route("/projects/{id}/preferences", get(preference_profile))
+        .route("/projects/{id}/preferences/analyze", post(analyze_preferences))
+        .route("/projects/{id}/preferences/import", post(import_preferences))
+        .route("/projects/{id}/preferences/rules", post(create_project_rule))
+        .route("/preferences/global/rules", post(create_global_rule))
+        .route("/preferences/rules/{id}", patch(update_rule).delete(delete_rule))
+        .route("/preferences/rules/{id}/copy", post(copy_rule))
+        .route("/preferences/suggestions/{id}/approve", post(approve_suggestion))
+        .route("/preferences/suggestions/{id}/reject", post(reject_suggestion))
+        .route("/settings/preferences", put(update_preference_settings))
         .route("/usage", get(usage))
         .route("/usage/resume", post(resume_usage))
         .fallback(|| async { AppError::NotFound("API") })
@@ -575,4 +594,188 @@ async fn resume_usage(State(s): State<AppState>) -> Result<Json<UsageStatus>> {
     let mut store = s.store();
     store.resume_llm()?;
     Ok(Json(store.usage_status()?))
+}
+
+// ---- 編集履歴・スナップショット（Phase 3） ------------------------------
+
+#[derive(Deserialize)]
+struct ApproveEdited {
+    content: Value,
+}
+
+async fn approve_proposal_edited(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ApproveEdited>,
+) -> Result<Json<Proposal>> {
+    Ok(Json(s.store().approve_proposal_with(&id, Some(req.content))?))
+}
+
+#[derive(Deserialize)]
+struct HistoryQuery {
+    scene_id: Option<String>,
+    before: Option<i64>,
+    limit: Option<i64>,
+}
+
+async fn project_history(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<HistoryQuery>,
+) -> Result<Json<Vec<HistoryEntry>>> {
+    Ok(Json(s.store().list_history(&id, q.scene_id.as_deref(), q.before, q.limit.unwrap_or(100))?))
+}
+
+#[derive(Deserialize)]
+struct HistorySettings {
+    max_entries: i64,
+}
+
+async fn history_settings(State(s): State<AppState>) -> Result<Json<Value>> {
+    Ok(Json(json!({ "max_entries": s.store().history_limit()? })))
+}
+
+async fn update_history_settings(State(s): State<AppState>, Json(req): Json<HistorySettings>) -> Result<Json<Value>> {
+    let mut store = s.store();
+    store.set_history_limit(req.max_entries)?;
+    Ok(Json(json!({ "max_entries": store.history_limit()? })))
+}
+
+#[derive(Deserialize, Default)]
+struct SnapshotBody {
+    #[serde(default)]
+    note: String,
+}
+
+async fn list_snapshots(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<Vec<SnapshotInfo>>> {
+    Ok(Json(s.store().list_snapshots(&id)?))
+}
+
+async fn create_snapshot(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<SnapshotBody>,
+) -> Result<(StatusCode, Json<SnapshotInfo>)> {
+    Ok((StatusCode::CREATED, Json(s.store().create_snapshot(&id, &req.note, SNAPSHOT_MANUAL)?)))
+}
+
+async fn delete_snapshot(State(s): State<AppState>, Path(id): Path<String>) -> Result<StatusCode> {
+    s.store().delete_snapshot(&id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn compare_snapshot(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<Vec<CompareItem>>> {
+    Ok(Json(s.store().compare_snapshot(&id)?))
+}
+
+/// 復元する。応答は、復元の直前に自動保存したスナップショット。
+async fn restore_snapshot(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<SnapshotInfo>> {
+    Ok(Json(s.store().restore_snapshot(&id)?))
+}
+
+// ---- 執筆嗜好（Phase 3） ------------------------------------------------
+
+#[derive(Deserialize)]
+struct RuleBody {
+    text: String,
+    #[serde(default = "default_category")]
+    category: String,
+}
+
+fn default_category() -> String {
+    "other".into()
+}
+
+#[derive(Deserialize)]
+struct UpdateRuleBody {
+    text: Option<String>,
+    category: Option<String>,
+    confidence: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct CopyRuleBody {
+    /// 複製先のプロジェクト。省略時は共通プロファイル。
+    project_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ImportBody {
+    source_project_id: String,
+}
+
+#[derive(Deserialize)]
+struct PreferenceSettingsBody {
+    auto_update: Option<bool>,
+    include_direct_edits: Option<bool>,
+}
+
+async fn preference_profile(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<Profile>> {
+    Ok(Json(s.store().profile(&id)?))
+}
+
+async fn analyze_preferences(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<AnalysisResult>> {
+    let result =
+        preferences::analyze(&s.store, s.provider.as_ref(), s.env_api_key.as_deref(), &id).await?;
+    Ok(Json(result))
+}
+
+async fn import_preferences(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ImportBody>,
+) -> Result<Json<Value>> {
+    let copied = s.store().import_project_rules(&req.source_project_id, &id)?;
+    Ok(Json(json!({ "copied": copied })))
+}
+
+async fn create_project_rule(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<RuleBody>,
+) -> Result<(StatusCode, Json<Rule>)> {
+    Ok((StatusCode::CREATED, Json(s.store().create_rule(Some(&id), &req.text, &req.category)?)))
+}
+
+async fn create_global_rule(State(s): State<AppState>, Json(req): Json<RuleBody>) -> Result<(StatusCode, Json<Rule>)> {
+    Ok((StatusCode::CREATED, Json(s.store().create_rule(None, &req.text, &req.category)?)))
+}
+
+async fn update_rule(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateRuleBody>,
+) -> Result<Json<Rule>> {
+    Ok(Json(s.store().update_rule(&id, req.text.as_deref(), req.category.as_deref(), req.confidence)?))
+}
+
+async fn delete_rule(State(s): State<AppState>, Path(id): Path<String>) -> Result<StatusCode> {
+    s.store().delete_rule(&id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn copy_rule(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<CopyRuleBody>,
+) -> Result<Json<Value>> {
+    let copied = s.store().copy_rules(&[id], req.project_id.as_deref())?;
+    Ok(Json(json!({ "copied": copied })))
+}
+
+async fn approve_suggestion(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<Suggestion>> {
+    Ok(Json(s.store().approve_suggestion(&id)?))
+}
+
+async fn reject_suggestion(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<Suggestion>> {
+    Ok(Json(s.store().reject_suggestion(&id)?))
+}
+
+async fn update_preference_settings(
+    State(s): State<AppState>,
+    Json(req): Json<PreferenceSettingsBody>,
+) -> Result<Json<preferences::PreferenceSettings>> {
+    let mut store = s.store();
+    store.update_preference_settings(req.auto_update, req.include_direct_edits)?;
+    Ok(Json(store.preference_settings()?))
 }

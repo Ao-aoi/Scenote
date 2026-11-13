@@ -407,3 +407,213 @@ async fn model_list_requires_key_and_reports_provider_errors() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body["error"]["message"].as_str().unwrap().contains("API キー"));
 }
+
+// ---- Phase 3: 編集履歴・スナップショット・嗜好学習 ----------------------
+
+async fn history(env: &Env) -> Vec<Value> {
+    let (status, h) = call(&env.app, "GET", &format!("/api/projects/{}/history?scene_id={}", env.project, env.scene), None).await;
+    assert_eq!(status, StatusCode::OK, "{h}");
+    h.as_array().unwrap().clone()
+}
+
+#[tokio::test]
+async fn history_records_origin_of_every_change() {
+    let env = setup().await;
+    let created = history(&env).await;
+    assert_eq!(created.len(), 3);
+    assert!(created.iter().all(|e| e["action"] == "create" && e["actor"] == "human"));
+
+    // 人間の連続した更新（自動保存）は 1 件にまとめ、最初の変更前の内容を保つ。
+    let (_, scene) = call(&env.app, "GET", &format!("/api/scenes/{}", env.scene), None).await;
+    let first = scene["elements"][0].clone();
+    let id = first["id"].as_str().unwrap();
+    let mut revision = first["revision"].as_i64().unwrap();
+    for body in ["館の扉が", "館の扉が、静かに", "館の扉が、静かに開いた。"] {
+        let (_, r) = call(&env.app, "PATCH", &format!("/api/elements/{id}"), Some(json!({ "base_revision": revision, "body": body }))).await;
+        revision = r["element"]["revision"].as_i64().unwrap();
+    }
+    let h = history(&env).await;
+    assert_eq!(h.len(), 4);
+    assert_eq!(h[0]["action"], "update");
+    assert_eq!(h[0]["before"]["body"], "館の扉が開いた。");
+    assert_eq!(h[0]["after"]["body"], "館の扉が、静かに開いた。");
+
+    // AI 提案: そのまま承認・修正して採用・却下を区別して記録する。
+    env.llm.reply(json!({ "reply": "案です。", "proposals": [
+        { "op": "update_element", "target": "e2", "body": "ようこそ、お客様。" },
+        { "op": "update_element", "target": "e3", "body": "アリスは目を見開いた。" },
+        { "op": "delete_element", "target": "e1" }
+    ] }));
+    let (_, exchange) = env.send("直して").await;
+    let proposals = exchange["messages"][1]["proposals"].as_array().unwrap().clone();
+    env.decide(&proposals[0], "approve").await;
+    let (status, edited) = call(&env.app, "POST", &format!("/api/proposals/{}/approve-edited", proposals[1]["id"].as_str().unwrap()),
+        Some(json!({ "content": { "kind": "Narration", "speaker": "", "body": "アリスは、目を見開いた。" } }))).await;
+    assert_eq!(status, StatusCode::OK, "{edited}");
+    assert_eq!(edited["final_content"]["body"], "アリスは、目を見開いた。");
+    // 差分は AI の提案ではなく、実際に反映した内容を示す。
+    assert!(edited["diff"].as_array().unwrap().iter().any(|d| d["text"].as_str().unwrap().contains('、')));
+    env.decide(&proposals[2], "reject").await;
+    // 削除の提案は修正できない。
+    let (_, more) = { env.llm.reply(json!({ "reply": "x", "proposals": [{ "op": "delete_element", "target": "e1" }] })); env.send("消して").await };
+    let p = &more["messages"][1]["proposals"][0];
+    let (status, _) = call(&env.app, "POST", &format!("/api/proposals/{}/approve-edited", p["id"].as_str().unwrap()), Some(json!({ "content": {} }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let h = history(&env).await;
+    assert_eq!(h[0]["actor"], "ai_modified");
+    assert_eq!(h[0]["after"]["body"], "アリスは、目を見開いた。");
+    assert_eq!(h[0]["proposal_id"], proposals[1]["id"]);
+    assert_eq!(h[1]["actor"], "ai_approved");
+    assert_eq!(h.len(), 6);
+
+    let (_, scene) = call(&env.app, "GET", &format!("/api/scenes/{}", env.scene), None).await;
+    let origins: Vec<&str> = scene["elements"].as_array().unwrap().iter().map(|e| e["origin"].as_str().unwrap()).collect();
+    assert_eq!(origins, ["human", "ai_approved", "ai_modified"]);
+    // AI 由来の要素を人間が編集すると「混在」になる。
+    let e = &scene["elements"][2];
+    call(&env.app, "PATCH", &format!("/api/elements/{}", e["id"].as_str().unwrap()), Some(json!({ "base_revision": e["revision"], "body": "手で直した" }))).await;
+    let (_, scene) = call(&env.app, "GET", &format!("/api/scenes/{}", env.scene), None).await;
+    assert_eq!(scene["elements"][2]["origin"], "mixed");
+}
+
+#[tokio::test]
+async fn snapshots_compare_and_restore_without_losing_current_state() {
+    let env = setup().await;
+    let (_, file) = call(&env.app, "POST", &format!("/api/projects/{}/files", env.project), Some(json!({ "name": "世界観", "content": "霧の港町" }))).await;
+    let (status, snap) = call(&env.app, "POST", &format!("/api/projects/{}/snapshots", env.project), Some(json!({ "note": "初稿" }))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!((snap["element_count"].as_i64(), snap["file_count"].as_i64()), (Some(3), Some(1)));
+
+    // スナップショットの後に、編集・場面の追加・ファイルの変更を行う。
+    let (_, scene) = call(&env.app, "GET", &format!("/api/scenes/{}", env.scene), None).await;
+    let e = &scene["elements"][1];
+    call(&env.app, "PATCH", &format!("/api/elements/{}", e["id"].as_str().unwrap()), Some(json!({ "base_revision": e["revision"], "body": "いらっしゃいませ。" }))).await;
+    let (_, tree) = call(&env.app, "GET", &format!("/api/projects/{}", env.project), None).await;
+    let chapter = tree["chapters"][0]["id"].as_str().unwrap();
+    call(&env.app, "POST", &format!("/api/chapters/{chapter}/scenes"), Some(json!({ "title": "新しい場面" }))).await;
+    call(&env.app, "PATCH", &format!("/api/files/{}", file["id"].as_str().unwrap()), Some(json!({ "base_revision": file["revision"], "content": "霧の港町と丘の館" }))).await;
+
+    let (_, items) = call(&env.app, "GET", &format!("/api/snapshots/{}/compare", snap["id"].as_str().unwrap()), None).await;
+    let summary: Vec<(String, String)> = items.as_array().unwrap().iter()
+        .map(|i| (i["item_type"].as_str().unwrap().to_string(), i["status"].as_str().unwrap().to_string())).collect();
+    assert_eq!(summary, [("scene".into(), "changed".into()), ("scene".into(), "added".into()), ("file".into(), "changed".into())]);
+    assert!(items[0]["diff"].as_array().unwrap().iter().any(|d| d["op"] == "delete" && d["text"].as_str().unwrap().contains("ようこそ")));
+
+    // 復元すると、直前の状態が自動でスナップショットになる。
+    let (status, backup) = call(&env.app, "POST", &format!("/api/snapshots/{}/restore", snap["id"].as_str().unwrap()), None).await;
+    assert_eq!(status, StatusCode::OK, "{backup}");
+    assert_eq!(backup["kind"], "before_restore");
+    let (_, tree) = call(&env.app, "GET", &format!("/api/projects/{}", env.project), None).await;
+    assert_eq!(tree["chapters"][0]["scenes"].as_array().unwrap().len(), 1);
+    assert_eq!(env.bodies().await, ["館の扉が開いた。", "ようこそ。", "アリスは息をのんだ。"]);
+    let (_, f) = call(&env.app, "GET", &format!("/api/files/{}", file["id"].as_str().unwrap()), None).await;
+    assert_eq!(f["content"], "霧の港町");
+    // ID は保たれ、リビジョンは復元前より大きくなる（古い画面からの保存は競合になる）。
+    let (_, scene) = call(&env.app, "GET", &format!("/api/scenes/{}", env.scene), None).await;
+    assert_eq!(scene["elements"][1]["id"], e["id"]);
+    let (status, _) = call(&env.app, "PATCH", &format!("/api/elements/{}", e["id"].as_str().unwrap()), Some(json!({ "base_revision": e["revision"].as_i64().unwrap() + 1, "body": "古い画面" }))).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // 自動保存したスナップショットから、復元前の状態に戻せる。
+    let (_, list) = call(&env.app, "GET", &format!("/api/projects/{}/snapshots", env.project), None).await;
+    assert_eq!(list.as_array().unwrap().len(), 2);
+    call(&env.app, "POST", &format!("/api/snapshots/{}/restore", backup["id"].as_str().unwrap()), None).await;
+    assert_eq!(env.bodies().await[1], "いらっしゃいませ。");
+    let (_, tree) = call(&env.app, "GET", &format!("/api/projects/{}", env.project), None).await;
+    assert_eq!(tree["chapters"][0]["scenes"].as_array().unwrap().len(), 2);
+    let h = call(&env.app, "GET", &format!("/api/projects/{}/history", env.project), None).await.1;
+    assert_eq!(h[0]["action"], "restore");
+}
+
+#[tokio::test]
+async fn preferences_are_learned_only_with_approval_by_default() {
+    let env = setup().await;
+    let (status, body) = call(&env.app, "POST", &format!("/api/projects/{}/preferences/analyze", env.project), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(env.llm.calls(), 0);
+
+    env.llm.reply(json!({ "reply": "案", "proposals": [
+        { "op": "update_element", "target": "e2", "body": "ようこそですわ。" },
+        { "op": "update_element", "target": "e3", "body": "アリスは息をのみましたわ。" }
+    ] }));
+    let (_, exchange) = env.send("直して").await;
+    let proposals = exchange["messages"][1]["proposals"].as_array().unwrap().clone();
+    call(&env.app, "POST", &format!("/api/proposals/{}/reject", proposals[0]["id"].as_str().unwrap()), Some(json!({ "reason": "執事は「ですわ」と言わない" }))).await;
+    call(&env.app, "POST", &format!("/api/proposals/{}/approve-edited", proposals[1]["id"].as_str().unwrap()),
+        Some(json!({ "content": { "kind": "Narration", "speaker": "", "body": "アリスは息をのんだ。" } }))).await;
+    let (_, profile) = call(&env.app, "GET", &format!("/api/projects/{}/preferences", env.project), None).await;
+    assert_eq!(profile["unanalyzed"], 2);
+    assert_eq!(profile["settings"]["auto_update"], false);
+
+    env.llm.reply(json!({ "summary": "お嬢様言葉を避けている。", "changes": [
+        { "op": "add", "text": "「〜ですわ」などのお嬢様言葉を使わない", "category": "character", "evidence": ["d1", "d2"], "reason": "却下と修正" }
+    ] }));
+    let (status, result) = call(&env.app, "POST", &format!("/api/projects/{}/preferences/analyze", env.project), None).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let prompt = env.llm.last_prompt();
+    assert!(prompt.contains("執事は「ですわ」と言わない") && prompt.contains("修正して採用"));
+    assert_eq!(result["applied"], false);
+    assert_eq!(result["profile"]["project_rules"].as_array().unwrap().len(), 0);
+    assert_eq!(result["profile"]["unanalyzed"], 0);
+    let suggestion = &result["suggestions"][0];
+    assert_eq!(suggestion["status"], "pending");
+    assert_eq!(suggestion["confidence"], 0.5);
+
+    // 承認するとプロファイルに入り、以降の依頼のプロンプトに含まれる。
+    let (_, s) = call(&env.app, "POST", &format!("/api/preferences/suggestions/{}/approve", suggestion["id"].as_str().unwrap()), None).await;
+    assert_eq!(s["status"], "approved");
+    let (_, profile) = call(&env.app, "GET", &format!("/api/projects/{}/preferences", env.project), None).await;
+    let rule = profile["project_rules"][0].clone();
+    assert_eq!(rule["source"], "ai");
+    assert_eq!(rule["evidence"].as_array().unwrap().len(), 2);
+    // 分析で作られたルールは共通プロファイルには入らない。
+    assert!(profile["global_rules"].as_array().unwrap().is_empty());
+    env.llm.reply(json!({ "reply": "了解", "proposals": [] }));
+    env.send("続きを書いて").await;
+    assert!(env.llm.last_prompt().contains("お嬢様言葉を使わない（傾向）"));
+
+    // 手動の編集・共通への複製・削除。
+    let rid = rule["id"].as_str().unwrap();
+    let (_, r) = call(&env.app, "PATCH", &format!("/api/preferences/rules/{rid}"), Some(json!({ "text": "お嬢様言葉は使わない", "confidence": 0.9 }))).await;
+    assert_eq!(r["confidence"], 0.9);
+    let (_, c) = call(&env.app, "POST", &format!("/api/preferences/rules/{rid}/copy"), Some(json!({}))).await;
+    assert_eq!(c["copied"], 1);
+    let (_, c) = call(&env.app, "POST", &format!("/api/preferences/rules/{rid}/copy"), Some(json!({}))).await;
+    assert_eq!(c["copied"], 0);
+    let (status, _) = call(&env.app, "POST", "/api/preferences/global/rules", Some(json!({ "text": "改行を多用しない", "category": "style" }))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = call(&env.app, "POST", "/api/preferences/global/rules", Some(json!({ "text": "x", "category": "unknown" }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // 別プロジェクトへの取り込み（継承）。
+    let (_, other) = call(&env.app, "POST", "/api/projects", Some(json!({ "name": "別作品" }))).await;
+    let other = other["id"].as_str().unwrap();
+    let (_, imported) = call(&env.app, "POST", &format!("/api/projects/{other}/preferences/import"), Some(json!({ "source_project_id": env.project }))).await;
+    assert_eq!(imported["copied"], 1);
+    let (_, p2) = call(&env.app, "GET", &format!("/api/projects/{other}/preferences"), None).await;
+    assert_eq!(p2["project_rules"][0]["source"], "copied");
+    assert_eq!(p2["global_rules"].as_array().unwrap().len(), 2);
+
+    // 自動更新 ON では、分析結果がそのまま適用される。
+    call(&env.app, "PUT", "/api/settings/preferences", Some(json!({ "auto_update": true }))).await;
+    env.llm.reply(json!({ "reply": "案", "proposals": [{ "op": "update_element", "target": "e1", "body": "扉。" }] }));
+    let (_, exchange) = env.send("短く").await;
+    env.decide(&exchange["messages"][1]["proposals"][0], "approve").await;
+    env.llm.reply(json!({ "summary": "短文を好む", "changes": [
+        { "op": "add", "text": "地の文は短くする", "category": "length", "evidence": ["d1"] },
+        { "op": "update", "target": "r1", "text": "お嬢様言葉は避ける", "category": "character", "evidence": ["d1"] }
+    ] }));
+    let (_, result) = call(&env.app, "POST", &format!("/api/projects/{}/preferences/analyze", env.project), None).await;
+    assert_eq!(result["applied"], true);
+    let rules = result["profile"]["project_rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 2);
+    let short = rules.iter().find(|r| r["text"] == "地の文は短くする").unwrap();
+    assert_eq!(short["confidence"], 0.35);
+    let updated = rules.iter().find(|r| r["id"] == rule["id"]).unwrap();
+    assert_eq!(updated["text"], "お嬢様言葉は避ける");
+    assert_eq!(updated["evidence"].as_array().unwrap().len(), 3);
+    let (_, usage) = call(&env.app, "GET", "/api/usage", None).await;
+    // 依頼 3 回 + 分析 2 回。分析の呼び出しも使用量に数える。
+    assert_eq!(usage["requests"], 5);
+}

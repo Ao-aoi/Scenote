@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::error::{AppError, Result};
+use crate::history::{self as hist, record_element, ACTION_CREATE, ACTION_DELETE, ACTION_REORDER, ACTION_UPDATE, ACTOR_HUMAN};
 use crate::markdown::{self, ChapterDoc, ProjectDoc, SceneDoc};
 use crate::model::*;
 
@@ -182,6 +183,12 @@ impl Store {
             tx.pragma_update(None, "user_version", 2)?;
             tx.commit()?;
         }
+        if version < 3 {
+            let tx = self.conn.transaction()?;
+            tx.execute_batch(include_str!("schema_v3.sql"))?;
+            tx.pragma_update(None, "user_version", 3)?;
+            tx.commit()?;
+        }
         Ok(())
     }
 
@@ -312,7 +319,15 @@ impl Store {
 
     pub fn delete_chapter(&mut self, id: &str) -> Result<()> {
         let chapter = self.get_chapter(id)?;
+        let scenes: Vec<(Scene, String)> = self
+            .list_scenes(id)?
+            .into_iter()
+            .map(|sc| self.scene_markdown(&sc.id).map(|(_, md)| (sc, md)))
+            .collect::<Result<_>>()?;
         let tx = self.conn.transaction()?;
+        for (scene, markdown) in &scenes {
+            record_scene_delete(&tx, &chapter.project_id, scene, markdown)?;
+        }
         tx.execute("DELETE FROM chapters WHERE id = ?1", [id])?;
         renumber(&tx, "chapters", "project_id", &chapter.project_id)?;
         touch_project(&tx, &chapter.project_id)?;
@@ -375,7 +390,9 @@ impl Store {
     pub fn delete_scene(&mut self, id: &str) -> Result<()> {
         let scene = self.get_scene(id)?;
         let chapter = self.get_chapter(&scene.chapter_id)?;
+        let markdown = self.scene_markdown(id)?.1;
         let tx = self.conn.transaction()?;
+        record_scene_delete(&tx, &chapter.project_id, &scene, &markdown)?;
         tx.execute("DELETE FROM scenes WHERE id = ?1", [id])?;
         renumber(&tx, "scenes", "chapter_id", &scene.chapter_id)?;
         touch_project(&tx, &chapter.project_id)?;
@@ -430,6 +447,7 @@ impl Store {
             params![scene_id, position],
         )?;
         let id = insert_element(&tx, scene_id, &content, position, ORIGIN_HUMAN)?;
+        record_element(&tx, scene_id, &id, ACTION_CREATE, ACTOR_HUMAN, None, Some(&content), None)?;
         touch_scene(&tx, scene_id)?;
         tx.commit()?;
         self.get_element(&id)
@@ -449,6 +467,7 @@ impl Store {
             });
         }
         let origin = origin_after_human_edit(&current.origin);
+        let previous = content_of(&current);
         let content = clean_content(ElementContent {
             kind: patch.kind.unwrap_or(current.kind),
             speaker: patch.speaker.unwrap_or(current.speaker),
@@ -456,6 +475,7 @@ impl Store {
         })?;
         let tx = self.conn.transaction()?;
         update_element_content(&tx, id, &content, origin)?;
+        record_element(&tx, &current.scene_id, id, ACTION_UPDATE, ACTOR_HUMAN, Some(&previous), Some(&content), None)?;
         touch_scene(&tx, &current.scene_id)?;
         tx.commit()?;
         self.get_element(id)
@@ -465,6 +485,7 @@ impl Store {
         let element = self.get_element(id)?;
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM elements WHERE id = ?1", [id])?;
+        record_element(&tx, &element.scene_id, id, ACTION_DELETE, ACTOR_HUMAN, Some(&content_of(&element)), None, None)?;
         renumber(&tx, "elements", "scene_id", &element.scene_id)?;
         touch_scene(&tx, &element.scene_id)?;
         tx.commit()?;
@@ -474,7 +495,22 @@ impl Store {
     pub fn reorder_elements(&mut self, scene_id: &str, ids: &[String]) -> Result<()> {
         self.get_scene(scene_id)?;
         let tx = self.conn.transaction()?;
+        let before = child_ids(&tx, "elements", "scene_id", scene_id)?;
         apply_order(&tx, "elements", "scene_id", scene_id, ids)?;
+        if before != ids {
+            let project_id = hist::project_of_scene(&tx, scene_id)?;
+            hist::record(&tx, hist::Change {
+                project_id: &project_id,
+                scene_id: Some(scene_id),
+                target_type: hist::TARGET_SCENE,
+                target_id: scene_id,
+                action: ACTION_REORDER,
+                actor: ACTOR_HUMAN,
+                before: Some(serde_json::json!({ "order": before })),
+                after: Some(serde_json::json!({ "order": ids })),
+                proposal_id: None,
+            })?;
+        }
         touch_scene(&tx, scene_id)?;
         tx.commit()?;
         Ok(())
@@ -522,6 +558,7 @@ impl Store {
                     if old_contents[*i] != new[new_index] {
                         let origin = origin_after_human_edit(&existing.origin);
                         update_element_content(&tx, &existing.id, &new[new_index], origin)?;
+                        record_element(&tx, scene_id, &existing.id, ACTION_UPDATE, ACTOR_HUMAN, Some(&old_contents[*i]), Some(&new[new_index]), None)?;
                     }
                     tx.execute(
                         "UPDATE elements SET position = ?2 WHERE id = ?1",
@@ -529,12 +566,14 @@ impl Store {
                     )?;
                 }
                 None => {
-                    insert_element(&tx, scene_id, &new[new_index], position, ORIGIN_HUMAN)?;
+                    let id = insert_element(&tx, scene_id, &new[new_index], position, ORIGIN_HUMAN)?;
+                    record_element(&tx, scene_id, &id, ACTION_CREATE, ACTOR_HUMAN, None, Some(&new[new_index]), None)?;
                 }
             }
         }
         for existing in old.iter().filter(|e| !used.contains(e.id.as_str())) {
             tx.execute("DELETE FROM elements WHERE id = ?1", [&existing.id])?;
+            record_element(&tx, scene_id, &existing.id, ACTION_DELETE, ACTOR_HUMAN, Some(&content_of(existing)), None, None)?;
         }
         touch_scene(&tx, scene_id)?;
         tx.commit()?;
@@ -703,6 +742,24 @@ pub(crate) fn touch_scene(tx: &Transaction, scene_id: &str) -> Result<()> {
         [scene_id],
     )?;
     Ok(())
+}
+
+/// 場面の削除を、その時点の本文（Markdown 表現）とともに履歴に残す。
+fn record_scene_delete(tx: &Transaction, project_id: &str, scene: &Scene, markdown: &str) -> Result<()> {
+    hist::record(
+        tx,
+        hist::Change {
+            project_id,
+            scene_id: Some(&scene.id),
+            target_type: hist::TARGET_SCENE,
+            target_id: &scene.id,
+            action: ACTION_DELETE,
+            actor: ACTOR_HUMAN,
+            before: Some(serde_json::json!({ "title": scene.title, "body": markdown })),
+            after: None,
+            proposal_id: None,
+        },
+    )
 }
 
 fn child_ids(tx: &Transaction, table: &str, parent_col: &str, parent_id: &str) -> Result<Vec<String>> {

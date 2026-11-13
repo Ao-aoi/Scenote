@@ -183,6 +183,7 @@ pub fn build_context(
     scene: Option<&SceneDetail>,
     files: &[ReferenceFile],
     chat: &Chat,
+    preferences: &str,
     request: &str,
 ) -> String {
     let mut out = String::new();
@@ -228,6 +229,10 @@ pub fn build_context(
     }
     for (i, file) in files.iter().enumerate() {
         out.push_str(&format!("## [f{}] {}\n{}\n\n", i + 1, file.name, file.content));
+    }
+    if !preferences.is_empty() {
+        out.push('\n');
+        out.push_str(preferences);
     }
     if !chat.instructions.trim().is_empty() {
         out.push_str(&format!("\n# このチャットの追加指示\n{}\n", chat.instructions.trim()));
@@ -441,7 +446,7 @@ pub async fn send_message(
     }
 
     // 1. 必要な情報をまとめて読み出す（LLM 呼び出し中はロックを保持しない）。
-    let (chat, tree, scene, fixed, candidates, history, model, api_key) = {
+    let (chat, tree, scene, fixed, candidates, history, model, api_key, preferences) = {
         let s = lock(store);
         s.ensure_llm_allowed()?;
         let chat = s.get_chat(chat_id)?;
@@ -473,7 +478,8 @@ pub async fn send_message(
             &request.exclude_file_ids,
         );
         let history = s.list_messages(chat_id)?;
-        (chat, tree, scene, fixed, candidates, history, s.llm_model()?, api_key)
+        let preferences = s.preference_prompt(&chat.project_id)?;
+        (chat, tree, scene, fixed, candidates, history, s.llm_model()?, api_key, preferences)
     };
 
     // 2. 参照ファイルの自動選択。候補が少量なら LLM を呼ばずにすべて参照する。
@@ -513,7 +519,7 @@ pub async fn send_message(
         .collect();
     messages.push(LlmMessage {
         role: Role::User,
-        text: build_context(&tree, scene.as_ref(), &files, &chat, &content),
+        text: build_context(&tree, scene.as_ref(), &files, &chat, &preferences, &content),
     });
     let llm_request = LlmRequest {
         system: SYSTEM_PROMPT.to_string(),

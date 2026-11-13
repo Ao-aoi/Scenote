@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// DB スキーマおよび JSON エクスポート形式のバージョン。
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 pub const KIND_DIALOGUE: &str = "Dialogue";
 pub const KIND_NARRATION: &str = "Narration";
@@ -30,6 +30,8 @@ pub const TEMPLATES: [&str; 5] = ["linear_adv", "choice_adv", "status_adv", "rpg
 pub const ORIGIN_HUMAN: &str = "human";
 /// AI の提案をそのまま承認して反映した内容。
 pub const ORIGIN_AI_APPROVED: &str = "ai_approved";
+/// AI の提案を人間が修正してから反映した内容。
+pub const ORIGIN_AI_MODIFIED: &str = "ai_modified";
 /// AI 由来の内容を人間が編集したもの。
 pub const ORIGIN_MIXED: &str = "mixed";
 
