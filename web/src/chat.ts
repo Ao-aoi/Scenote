@@ -45,6 +45,8 @@ export interface ChatPanelOptions {
   flushEditors: () => Promise<boolean>;
   /** 提案の承認によってサーバー側のデータが変わったとき。 */
   onApplied: (proposal: Proposal) => Promise<void>;
+  /** 提案を承認・修正して採用・却下したとき（嗜好分析の案内の判定用）。 */
+  onDecided?: () => void;
   openAiSettings: () => void;
 }
 
@@ -557,6 +559,7 @@ export class ChatPanel {
         const updated = await api.approveProposalEdited(p.id, content);
         message.proposals = message.proposals.map((x) => (x.id === updated.id ? updated : x));
         if (updated.status === "approved") await this.options.onApplied(updated);
+        if (updated.status !== "stale") this.options.onDecided?.();
         if (updated.status === "stale") toast("提案の後に対象が変更または削除されたため、反映しませんでした", "error");
       } finally {
         this.renderMessages();
@@ -592,6 +595,7 @@ export class ChatPanel {
     const updated = action === "approve" ? await api.approveProposal(p.id) : await api.rejectProposal(p.id, reason);
     message.proposals = message.proposals.map((x) => (x.id === updated.id ? updated : x));
     if (updated.status === "approved") await this.options.onApplied(updated);
+    if (updated.status !== "stale") this.options.onDecided?.();
     if (updated.status === "stale") {
       toast("提案の後に対象が変更または削除されたため、反映しませんでした", "error");
     }

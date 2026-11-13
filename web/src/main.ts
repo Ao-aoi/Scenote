@@ -2,12 +2,14 @@
 
 import "./style.css";
 import { openAiSettings } from "./aiSettings";
+import { maybePromptAnalysis } from "./analysisPrompt";
 import { api, setUnauthenticatedHandler } from "./api";
 import { disconnectThisDevice, openDeviceManager, showPairingScreen } from "./devices";
 import { connectEvents } from "./events";
 import { ChatPanel } from "./chat";
 import { askConfirm, askProject, askText, h, openMenu, toast, type MenuItem } from "./dom";
 import { FileEditor } from "./fileEditor";
+import { icon, iconButton } from "./icons";
 import { HistoryView } from "./historyView";
 import { PreferencesView } from "./preferencesView";
 import { StructureView } from "./structureView";
@@ -48,20 +50,13 @@ const historyHost = h("div", { class: "editor-host", hidden: true });
 const prefsHost = h("div", { class: "editor-host", hidden: true });
 const structureHost = h("div", { class: "editor-host structure-host", hidden: true });
 const main = h("main", { class: "main" }, sceneHost, fileHost, historyHost, prefsHost, structureHost);
-function topbarAction(label: string, symbol: string): HTMLButtonElement {
-  return h(
-    "button",
-    { type: "button", class: "topbar-action", "aria-label": label, title: label },
-    h("span", { class: "topbar-icon", "aria-hidden": "true" }, symbol),
-    h("span", { class: "topbar-label" }, label),
-  );
-}
-const historyButton = topbarAction("履歴", "◷");
+const historyButton = iconButton("history", "履歴", "履歴とスナップショット");
 const chatHost = h("aside", { class: "chat", "aria-label": "AI チャット" });
-const chatToggle = h("button", { type: "button", "aria-pressed": "true", "aria-label": "AI チャットを開閉" }, "AI");
-const navToggle = h("button", { type: "button", class: "icon", "aria-label": "章と場面の一覧を開閉", title: "章と場面" }, "☰");
-const settingsButton = topbarAction("設定", "⚙");
-const exportButton = topbarAction("書き出し", "⇩");
+const chatToggle = iconButton("ai", "AI", "AI チャットを開閉");
+chatToggle.setAttribute("aria-pressed", "true");
+const navToggle = h("button", { type: "button", class: "icon", title: "章と場面の一覧を開閉", "aria-label": "章と場面の一覧を開閉" }, icon("menu"));
+const settingsButton = iconButton("settings", "設定");
+const exportButton = iconButton("export", "書き出し");
 const shell = h(
   "div", { class: "shell" },
   h(
@@ -127,7 +122,19 @@ const chat = new ChatPanel(chatHost, {
     }
   },
   openAiSettings: () => void run(showAiSettings),
+  onDecided: promptAnalysis,
 });
+
+/** 提案への操作がたまっていれば、嗜好の分析をスナックバーで案内する。 */
+function promptAnalysis(): void {
+  if (!tree || view === "prefs") return;
+  const projectId = tree.project.id;
+  void maybePromptAnalysis(projectId, () => void run(async () => {
+    if (tree?.project.id !== projectId) return;
+    await openPanel("prefs");
+    await preferencesView.analyze();
+  }));
+}
 
 async function showAiSettings(): Promise<void> {
   if (await openAiSettings(auth.local)) await chat.refreshUsage();
@@ -251,6 +258,7 @@ async function openProject(projectId: string | null): Promise<void> {
   renderProjectSelect();
   renderNav();
   await chat.setProject(projectId);
+  promptAnalysis();
 }
 
 async function createProject(): Promise<void> {

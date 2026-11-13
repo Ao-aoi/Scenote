@@ -161,7 +161,8 @@ export class PreferencesView {
     );
   }
 
-  private async analyze(): Promise<void> {
+  /** 分析を実行する（画面のボタンと、スナックバーの案内から呼ばれる）。 */
+  async analyze(): Promise<void> {
     if (!this.projectId || this.analyzing) return;
     this.analyzing = true;
     await this.render();
