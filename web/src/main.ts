@@ -10,6 +10,7 @@ import { askConfirm, askProject, askText, h, openMenu, toast, type MenuItem } fr
 import { FileEditor } from "./fileEditor";
 import { HistoryView } from "./historyView";
 import { PreferencesView } from "./preferencesView";
+import { StructureView } from "./structureView";
 import { SceneEditor, type SaveState, type SceneEditorOptions } from "./sceneEditor";
 import { TEMPLATE_LABELS, type Meta, type Project, type ProjectTree, type ReferenceFile } from "./types";
 
@@ -31,7 +32,7 @@ let projects: Project[] = [];
 let tree: ProjectTree | null = null;
 let files: ReferenceFile[] = [];
 /** 本文領域に表示しているもの。 */
-type View = "scene" | "file" | "history" | "prefs";
+type View = "scene" | "file" | "history" | "prefs" | "structure";
 let view: View = "scene";
 const saveStates: Record<"scene" | "file", { state: SaveState; message?: string }> = {
   scene: { state: "saved" },
@@ -45,7 +46,8 @@ const sceneHost = h("div", { class: "editor-host" });
 const fileHost = h("div", { class: "editor-host", hidden: true });
 const historyHost = h("div", { class: "editor-host", hidden: true });
 const prefsHost = h("div", { class: "editor-host", hidden: true });
-const main = h("main", { class: "main" }, sceneHost, fileHost, historyHost, prefsHost);
+const structureHost = h("div", { class: "editor-host structure-host", hidden: true });
+const main = h("main", { class: "main" }, sceneHost, fileHost, historyHost, prefsHost, structureHost);
 const historyButton = h("button", { type: "button" }, "履歴");
 const chatHost = h("aside", { class: "chat", "aria-label": "AI チャット" });
 const chatToggle = h("button", { type: "button", "aria-pressed": "true", "aria-label": "AI チャットを開閉" }, "AI");
@@ -78,6 +80,8 @@ function showSaveState(): void {
 
 const editorOptions: SceneEditorOptions = {
   kinds: [],
+  scenes: () =>
+    tree?.chapters.flatMap((c) => c.scenes.map((s) => ({ id: s.id, label: `${c.title} / ${s.title}` }))) ?? [],
   onStateChange: (state, message) => {
     saveStates.scene = { state, message };
     showSaveState();
@@ -127,6 +131,8 @@ function setView(next: View): void {
   fileHost.hidden = next !== "file";
   historyHost.hidden = next !== "history";
   prefsHost.hidden = next !== "prefs";
+  structureHost.hidden = next !== "structure";
+  main.classList.toggle("wide", next === "structure");
   historyButton.setAttribute("aria-pressed", String(next === "history"));
   showSaveState();
 }
@@ -144,9 +150,12 @@ const historyView = new HistoryView(historyHost, {
   },
 });
 const preferencesView = new PreferencesView(prefsHost);
+const structureView = new StructureView(structureHost, {
+  openScene: (sceneId) => void run(() => selectScene(sceneId)),
+});
 
 /** 場面・参照ファイル以外の画面（履歴・嗜好）を開く。編集中の内容は先に保存する。 */
-async function openPanel(next: "history" | "prefs"): Promise<void> {
+async function openPanel(next: "history" | "prefs" | "structure"): Promise<void> {
   if (!tree) return;
   if (!(await flushEditors())) {
     toast("編集中の内容を保存できていません。競合やエラーを解消してからやり直してください", "error");
@@ -155,6 +164,7 @@ async function openPanel(next: "history" | "prefs"): Promise<void> {
   if (!(await fileEditor.open(null))) return;
   setView(next);
   if (next === "history") await historyView.open(tree.project.id);
+  else if (next === "structure") await structureView.open(tree.project.id);
   else await preferencesView.open(tree.project.id, projects);
   renderNav();
   shell.classList.remove("nav-open");
@@ -443,9 +453,18 @@ function renderNav(): void {
     );
   });
   const prefsActive = view === "prefs";
+  const structureActive = view === "structure";
   const prefsSection = h(
     "section", { class: "chapter files" },
     h("ul", {}, h(
+      "li", { class: structureActive ? "scene-item active" : "scene-item" },
+      h("button", {
+        type: "button",
+        class: "scene-link",
+        "aria-current": structureActive ? "true" : undefined,
+        onclick: () => void run(() => openPanel("structure")),
+      }, "構造（分岐・変数・チェック）"),
+    ), h(
       "li", { class: prefsActive ? "scene-item active" : "scene-item" },
       h("button", {
         type: "button",
@@ -582,6 +601,9 @@ async function applyRemoteChanges(scopes: Set<string>): Promise<void> {
     await historyView.open(projectId);
   }
   if (view === "prefs" && (scopes.has("prefs") || scopes.has("chat"))) await preferencesView.open(projectId, projects);
+  if (view === "structure" && ["structure", "scene", "tree", "snapshots"].some((x) => scopes.has(x))) {
+    await structureView.open(projectId);
+  }
 }
 
 let remoteQueue: Set<string> | null = null;

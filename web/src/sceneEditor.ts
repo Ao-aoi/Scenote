@@ -1,6 +1,7 @@
 // 場面エディタ。要素ごとのブロック編集と、場面全体の Markdown ソース編集を切り替えられる。
 
 import { api, ApiError } from "./api";
+import { BRANCH_KINDS, buildBranchEditor, type BranchAttrs, type SceneOption } from "./branchEditor";
 import { askConfirm, h, toast } from "./dom";
 import { kindLabel, type ScenarioElement, type SceneDetail } from "./types";
 
@@ -96,6 +97,8 @@ export function autoGrow(textarea: HTMLTextAreaElement): void {
 
 export interface SceneEditorOptions {
   kinds: string[];
+  /** 分岐の移動先として選べる場面。 */
+  scenes: () => SceneOption[];
   onStateChange: (state: SaveState, message?: string) => void;
   /** 場面の題名が変わったとき（ナビゲーションの更新用）。 */
   onSceneRenamed: () => void;
@@ -379,6 +382,7 @@ export class SceneEditor {
           kind: kindSelect.value,
           speaker: speaker.value.trim(),
           body: textarea.value,
+          ...(branch && branchKind === kindSelect.value ? { attrs: branch.read() } : {}),
         });
         element = result.element;
         scene.revision = result.scene_revision;
@@ -441,8 +445,21 @@ export class SceneEditor {
       );
     };
 
+    // 選択肢・遷移・変数の変更では、移動先・条件などの編集欄を表示する。
+    let branch: { element: HTMLElement; read: () => BranchAttrs } | null = null;
+    let branchKind = "";
+    const branchHost = h("div", { class: "branch-host" });
+    const syncBranch = () => {
+      const kind = kindSelect.value;
+      if (kind === branchKind) return;
+      branchKind = kind;
+      const attrs = kind === element.kind ? (element.attrs as Record<string, unknown>) : {};
+      branch = BRANCH_KINDS.has(kind) ? buildBranchEditor(kind, attrs ?? {}, this.options.scenes(), () => saver.touch()) : null;
+      branchHost.replaceChildren(branch?.element ?? "");
+    };
     const syncKind = () => {
       const kind = kindSelect.value;
+      syncBranch();
       block.className = `block kind-${kind}`;
       textarea.placeholder = `${kindLabel(kind)}を入力`;
       const showSpeaker = kind === "Dialogue" || kind === "CharacterAction" || speaker.value !== "";
@@ -487,6 +504,7 @@ export class SceneEditor {
         ),
       ),
       textarea,
+      branchHost,
       notice,
     );
     return block;

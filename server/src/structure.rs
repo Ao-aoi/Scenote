@@ -480,6 +480,8 @@ impl Store {
                 issue(&mut issues, "info", format!("変数「{}」はどこでも使われていません", v.name), None, None);
             } else if !reads.contains_key(&v.name) {
                 issue(&mut issues, "info", format!("変数「{}」は変更されていますが、条件では使われていません", v.name), None, None);
+            } else if !writes.contains_key(&v.name) {
+                issue(&mut issues, "info", format!("変数「{}」は条件で使われていますが、どこでも変更されていません（常に初期値のままです）", v.name), None, None);
             }
         }
         let names_of = |ids: Option<&Vec<String>>| -> Vec<String> {
@@ -595,6 +597,7 @@ mod tests {
         assert!(messages.iter().any(|m| m.contains("「所持金」は定義されていません")), "{messages:?}");
         assert!(messages.iter().any(|m| m.contains("==")), "{messages:?}");
         assert!(messages.iter().any(|m| m.contains("「未使用」はどこでも使われていません")));
+        assert!(!messages.iter().any(|m| m.contains("「鍵」は条件で使われていますが")), "鍵は城で変更している");
         assert_eq!(st.issues[0].severity, "error");
 
         let usage = st.variable_usage.iter().find(|u| u.name == "鍵").unwrap();

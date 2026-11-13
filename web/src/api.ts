@@ -2,6 +2,8 @@
 
 import type {
   AnalysisResult,
+  Structure,
+  Variable,
   Device,
   Chat,
   CompareItem,
@@ -127,7 +129,7 @@ export const api = {
 
   createElement: (sceneId: string, input: ElementInput & { position?: number }) =>
     request<ElementResult>("POST", `/scenes/${sceneId}/elements`, input),
-  updateElement: (id: string, baseRevision: number, input: ElementInput) =>
+  updateElement: (id: string, baseRevision: number, input: ElementInput & { attrs?: unknown }) =>
     request<ElementResult>("PATCH", `/elements/${id}`, { base_revision: baseRevision, ...input }),
   deleteElement: (id: string) => request<void>("DELETE", `/elements/${id}`),
   reorderElements: (sceneId: string, ids: string[]) =>
@@ -199,6 +201,14 @@ export const api = {
   rejectSuggestion: (id: string) => request<PreferenceSuggestion>("POST", `/preferences/suggestions/${id}/reject`, {}),
   updatePreferenceSettings: (patch: { auto_update?: boolean; include_direct_edits?: boolean }) =>
     request<{ auto_update: boolean; include_direct_edits: boolean }>("PUT", "/settings/preferences", patch),
+
+  listVariables: (projectId: string) => request<Variable[]>("GET", `/projects/${projectId}/variables`),
+  createVariable: (projectId: string, v: { name: string; var_type: string; initial: string; description: string }) =>
+    request<Variable>("POST", `/projects/${projectId}/variables`, v),
+  updateVariable: (id: string, v: Partial<{ name: string; var_type: string; initial: string; description: string }>) =>
+    request<Variable>("PATCH", `/variables/${id}`, v),
+  deleteVariable: (id: string) => request<void>("DELETE", `/variables/${id}`),
+  getStructure: (projectId: string) => request<Structure>("GET", `/projects/${projectId}/structure`),
 
   authStatus: () =>
     request<{ authenticated: boolean; local: boolean; device_name: string | null; lan_enabled: boolean }>("GET", "/auth/status"),

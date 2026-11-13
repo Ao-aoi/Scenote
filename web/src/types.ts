@@ -39,6 +39,8 @@ export interface ScenarioElement {
   position: number;
   origin: string;
   revision: number;
+  /** 分岐先・条件などの構造データ。 */
+  attrs: Record<string, unknown>;
 }
 
 export interface SceneDetail extends Scene {
@@ -62,6 +64,8 @@ export const KIND_LABELS: Record<string, string> = {
   CharacterAction: "動作",
   Direction: "演出",
   Choice: "選択肢",
+  Transition: "遷移",
+  VariableChange: "変数",
 };
 
 export const TEMPLATE_LABELS: Record<string, string> = {
@@ -281,3 +285,56 @@ export interface Device {
   created_at: string;
   last_seen_at: string;
 }
+
+// ---- Phase 5: 変数・構造 ----
+
+export interface Variable {
+  id: string;
+  project_id: string;
+  name: string;
+  var_type: "number" | "bool" | "text";
+  initial: string;
+  description: string;
+}
+
+export interface GraphNode {
+  id: string;
+  title: string;
+  chapter_id: string;
+  chapter_title: string;
+  order: number;
+  is_start: boolean;
+  is_end: boolean;
+  reachable: boolean;
+  element_count: number;
+  choice_count: number;
+}
+
+export interface GraphEdge {
+  from: string;
+  to: string;
+  kind: "next" | "choice" | "transition";
+  label: string;
+  condition: string;
+  effects: string;
+  element_id: string | null;
+}
+
+export interface StructureIssue {
+  severity: "error" | "warning" | "info";
+  message: string;
+  scene_id: string | null;
+  element_id: string | null;
+}
+
+export interface Structure {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  characters: { name: string; lines: number; scenes: number }[];
+  relations: { a: string; b: string; shared_scenes: number }[];
+  variables: Variable[];
+  variable_usage: { name: string; read_in: string[]; written_in: string[] }[];
+  issues: StructureIssue[];
+}
+
+export const VAR_TYPE_LABELS: Record<string, string> = { number: "数値", bool: "真偽値", text: "文字列" };
