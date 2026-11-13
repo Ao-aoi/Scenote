@@ -481,3 +481,36 @@ button.link { border: none; background: none; color: var(--accent); padding: 0; 
   .chat { position: absolute; inset: 0 0 0 auto; z-index: 9; width: min(460px, 100vw); box-shadow: -4px 0 16px rgba(0, 0, 0, 0.2); }
   .status { font-size: 0.75rem; }
 }
+
+
+/* ---- 狭い画面のトップバー ---- */
+.topbar-action {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.topbar-icon { display: none; line-height: 1; font-size: 1.15rem; }
+.topbar-label { white-space: nowrap; }
+
+@media (max-width: 900px) {
+  .topbar { gap: 4px; padding-left: 8px; padding-right: 8px; }
+  .topbar-action { width: 40px; min-width: 40px; min-height: 40px; padding: 4px; }
+  .topbar-icon { display: inline; }
+  .topbar-label { display: none; }
+  .project-select { flex: 1 1 100px; max-width: 180px; }
+  .status { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+}
+
+@media (max-width: 520px) {
+  .topbar { gap: 2px; padding-left: 6px; padding-right: 6px; }
+  .topbar-action { width: 38px; min-width: 38px; }
+  .project-select { max-width: none; }
+  .status { max-width: 76px; font-size: 0.7rem; }
+}
+
+@media (max-width: 390px) {
+  .status { display: none; }
+}
