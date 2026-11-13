@@ -770,6 +770,6 @@ LLMが返した構造化データは、必ずアプリ側でスキーマ検証�
 
 ### 20.2 保留中の事項
 
-- **MdLiteの再利用**：`Ao-aoi/mdlite` の構造・ライセンス・依存関係は未確認である。Phase 1 のエディタは標準の `textarea` による最小実装とし、編集部分は `web/src/sceneEditor.ts` に分離している。MdLite の確認後、Milkdown / CodeMirror 6 による編集体験へ置き換えるかを判断する。
+- **MdLiteの再利用**：`Ao-aoi/mdlite` を確認した（2026-11時点）。構成は Tauri 依存部（`backend.ts`、`main.ts`）と編集部に分かれており、編集部の `source.ts`（CodeMirror 6 のソース編集）、`toggle.ts`（太字・斜体などのトグル）、`preview/`（Milkdown のプレビュー編集）は `parent`・`text`・`onEdit` を受け取る独立した部品で、Web UI へ移植できる。ライセンスファイルはないが、ユーザー自身のリポジトリである。Scenote 側のエディタは現在も標準の `textarea` による最小実装で、編集部分は `web/src/sceneEditor.ts` に分離している。どの範囲を取り込むか（ソース編集のみか、プレビュー編集・数式・コードハイライトまで含めるか）は依存関係の増加を伴うため、ユーザーの判断を待つ。
 - **Markdown・JSONのインポート**：解析処理は実装済みだが、ファイルからプロジェクトを作成する機能は未実装である。
 
