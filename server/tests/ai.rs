@@ -394,3 +394,16 @@ async fn api_key_is_required_and_never_returned() {
     assert!(body["error"]["message"].as_str().unwrap().contains("API キー"));
     assert_eq!(env.llm.calls(), 0);
 }
+
+#[tokio::test]
+async fn model_list_requires_key_and_reports_provider_errors() {
+    let env = setup().await;
+    // 模擬プロバイダーはモデル一覧に対応していないため、そのエラーを返す（キーは含まれない）。
+    let (status, body) = call(&env.app, "GET", "/api/settings/llm/models", None).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(body["error"]["code"], "llm");
+    call(&env.app, "PUT", "/api/settings/llm", Some(json!({ "api_key": "" }))).await;
+    let (status, body) = call(&env.app, "GET", "/api/settings/llm/models", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"]["message"].as_str().unwrap().contains("API キー"));
+}

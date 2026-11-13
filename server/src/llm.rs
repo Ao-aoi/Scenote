@@ -159,6 +159,37 @@ pub(crate) fn gemini_error_message(status: u16, body: &Value) -> String {
     }
 }
 
+/// `models.list` の 1 ページ分から、generateContent に対応したモデルを `models` へ追加する。
+pub(crate) fn collect_models(body: &Value, models: &mut Vec<LlmModel>) -> Result<(), LlmError> {
+    let entries = body["models"]
+        .as_array()
+        .ok_or_else(|| LlmError("Gemini API から不正なモデル一覧が返されました".into()))?;
+    for entry in entries {
+        let supports_generation = entry["supportedGenerationMethods"]
+            .as_array()
+            .is_some_and(|methods| methods.iter().any(|m| m.as_str() == Some("generateContent")));
+        let Some(name) = entry["name"].as_str().and_then(|n| n.strip_prefix("models/")) else {
+            continue;
+        };
+        if !supports_generation
+            || name.is_empty()
+            || name.len() > 100
+            || !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_'))
+            || models.iter().any(|m| m.id == name)
+        {
+            continue;
+        }
+        let display_name = entry["displayName"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(name)
+            .to_string();
+        models.push(LlmModel { id: name.to_string(), display_name });
+    }
+    Ok(())
+}
+
 impl LlmProvider for GeminiProvider {
     fn list_models<'a>(&'a self, api_key: &'a str) -> LlmModelsFuture<'a> {
         Box::pin(async move {
@@ -169,6 +200,8 @@ impl LlmProvider for GeminiProvider {
                 let mut request = self.client
                     .get(format!("{}/models", self.base_url))
                     .header("x-goog-api-key", api_key)
+                    // 設定画面を長く待たせないよう、生成より短い時間で打ち切る。
+                    .timeout(Duration::from_secs(20))
                     .query(&[("pageSize", "1000")]);
                 if let Some(token) = page_token.as_deref() {
                     request = request.query(&[("pageToken", token)]);
@@ -181,27 +214,7 @@ impl LlmProvider for GeminiProvider {
                 if !(200..300).contains(&status) {
                     return Err(LlmError(gemini_error_message(status, &body)));
                 }
-                let entries = body["models"].as_array().ok_or_else(|| {
-                    LlmError("Gemini API から不正なモデル一覧が返されました".into())
-                })?;
-                for entry in entries {
-                    let supports_generation = entry["supportedGenerationMethods"]
-                        .as_array()
-                        .is_some_and(|methods| methods.iter().any(|m| m.as_str() == Some("generateContent")));
-                    let Some(name) = entry["name"].as_str().and_then(|n| n.strip_prefix("models/")) else {
-                        continue;
-                    };
-                    if !supports_generation
-                        || name.is_empty()
-                        || !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_'))
-                        || models.iter().any(|m| m.id == name)
-                    {
-                        continue;
-                    }
-                    let display_name = entry["displayName"].as_str().filter(|s| !s.trim().is_empty())
-                        .unwrap_or(name).to_string();
-                    models.push(LlmModel { id: name.to_string(), display_name });
-                }
+                collect_models(&body, &mut models)?;
                 let next = body["nextPageToken"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
                 match next {
                     Some(token) if seen_tokens.insert(token.clone()) => page_token = Some(token),
@@ -274,6 +287,24 @@ mod tests {
         let r = parse_gemini_response(&body).unwrap();
         assert_eq!(r.text, "前半後半");
         assert_eq!((r.input_tokens, r.output_tokens), (120, 42));
+    }
+
+    #[test]
+    fn collects_generate_content_models_only() {
+        let page = json!({ "models": [
+            { "name": "models/gemini-a", "displayName": "Gemini A", "supportedGenerationMethods": ["generateContent", "countTokens"] },
+            { "name": "models/embed-x", "displayName": "Embed", "supportedGenerationMethods": ["embedContent"] },
+            { "name": "models/no-methods" },
+            { "name": "tunedModels/foo", "supportedGenerationMethods": ["generateContent"] },
+            { "name": "models/bad name", "supportedGenerationMethods": ["generateContent"] },
+            { "name": "models/gemini-b", "displayName": "  ", "supportedGenerationMethods": ["generateContent"] },
+            { "name": "models/gemini-a", "displayName": "重複", "supportedGenerationMethods": ["generateContent"] }
+        ] });
+        let mut models = Vec::new();
+        collect_models(&page, &mut models).unwrap();
+        let got: Vec<(&str, &str)> = models.iter().map(|m| (m.id.as_str(), m.display_name.as_str())).collect();
+        assert_eq!(got, [("gemini-a", "Gemini A"), ("gemini-b", "gemini-b")]);
+        assert!(collect_models(&json!({ "error": {} }), &mut models).is_err());
     }
 
     #[test]

@@ -771,7 +771,7 @@ LLMが返した構造化データは、必ずアプリ側でスキーマ検証�
 ### 20.2 Phase 2 で決定した事項
 
 - **MdLiteの再利用**：`Ao-aoi/mdlite` の `source.ts`（CodeMirror 6 のソース編集）と `toggle.ts`（太字・斜体・取り消し線のトグル）を `web/src/sourceEditor.ts`・`web/src/toggle.ts` へ移植し、場面の Markdown モードと参照ファイルの編集に使う。初回表示を軽く保つため遅延読み込みとし、コードブロックの言語別ハイライト（`language-data`）は含めない。プレビュー編集（Milkdown）・数式・Shiki は取り込んでいない。
-- **LLM接続**：`server/src/llm.rs` の `LlmProvider` を介する。Gemini は `generateContent` を使い、APIキーはヘッダーで送る。構造化出力の指定方法がモデル世代によって異なるため使用せず、JSON の形式はプロンプトで指示し、応答は `server/src/assistant.rs` で検証する。既定モデルは別名 `gemini-flash-latest` とし、設定で変更できる。
+- **LLM接続**：`server/src/llm.rs` の `LlmProvider` を介する。Gemini は `generateContent` を使い、APIキーはヘッダーで送る。構造化出力の指定方法がモデル世代によって異なるため使用せず、JSON の形式はプロンプトで指示し、応答は `server/src/assistant.rs` で検証する。既定モデルは別名 `gemini-flash-latest` とし、設定画面で `models.list` から取得した generateContent 対応モデルを選べる（一覧の取得はサーバー側で行い、APIキーはブラウザへ渡さない）。
 - **APIキーの保管**：環境変数 `GEMINI_API_KEY`、または画面の「AI 設定」から登録する（SQLite の `settings` テーブル、PC側のみ）。APIは設定済みかどうかだけを返し、キー自体は返さない。
 - **AIへ渡す範囲**：プロジェクト名・説明、章と場面の題名一覧、依頼時に開いている場面の全要素、選択された参照ファイル、チャットの追加指示、直近20件のやり取り。要素は `e1`、ファイルは `f1` のような参照名で渡し、IDとの対応づけはプログラムが行う。要素への提案は、開いている場面のみを対象とする。
 - **提案の単位と操作**：要素の変更・追加・削除、参照ファイルの変更・作成の5種類。提案ごとに承認・却下する。提案の生成後に対象が変更・削除されていた場合は反映せず、「適用不可（`stale`）」とする。却下時には任意で理由を記録する。

@@ -2,6 +2,7 @@
 
 import { api } from "./api";
 import { h, openDialog, toast } from "./dom";
+import type { LlmModel } from "./types";
 
 interface FormValue {
   api_key?: string;
@@ -13,7 +14,7 @@ interface FormValue {
 /** 設定ダイアログを開く。保存した場合は true。 */
 export async function openAiSettings(): Promise<boolean> {
   const [settings, usage] = await Promise.all([api.getLlmSettings(), api.getUsage()]);
-  let models = settings.has_api_key ? await api.getGeminiModels().catch(() => []) : [];
+  let models: LlmModel[] = [];
   const value = await openDialog<FormValue>((close) => {
     const key = h("input", {
       type: "password",
@@ -25,7 +26,8 @@ export async function openAiSettings(): Promise<boolean> {
     const model = h("select", { class: "field", required: true });
     const modelStatus = h("p", { class: "hint" });
     const refreshModels = h("button", { type: "button" }, "モデル一覧を更新");
-    const renderModels = () => {
+    let loading = false;
+    const renderModels = (error?: string) => {
       const current = model.value || settings.model;
       const choices = new Map<string, string>();
       choices.set("gemini-flash-latest", "Gemini Flash Latest（デフォルト）");
@@ -34,25 +36,37 @@ export async function openAiSettings(): Promise<boolean> {
       model.replaceChildren(...[...choices].map(([id, label]) =>
         h("option", { value: id, selected: id === current }, label),
       ));
-      modelStatus.textContent = models.length
+      modelStatus.textContent = loading
+        ? "モデル一覧を取得しています…"
+        : error
+          ? error
+          : models.length
         ? models.length + " 個の generateContent 対応モデルを取得しました。"
         : settings.has_api_key
           ? "モデル一覧を取得できませんでした。APIキー・通信状態を確認して再取得してください。"
           : "APIキーを設定すると、利用可能なモデル一覧を取得できます。";
     };
-    renderModels();
-    refreshModels.addEventListener("click", async () => {
+    // ダイアログはすぐに開き、一覧は裏で取得する（通信が遅くても設定画面を待たせない）。
+    const loadModels = async () => {
+      if (!settings.has_api_key || loading) return;
+      loading = true;
       refreshModels.disabled = true;
-      modelStatus.textContent = "モデル一覧を取得しています…";
+      renderModels();
+      let error: string | undefined;
       try {
         models = await api.getGeminiModels();
-        renderModels();
-      } catch (error) {
-        modelStatus.textContent = error instanceof Error ? error.message : "モデル一覧を取得できませんでした。";
+      } catch (e) {
+        error = e instanceof Error ? e.message : "モデル一覧を取得できませんでした。";
       } finally {
-        refreshModels.disabled = false;
+        loading = false;
+        refreshModels.disabled = !settings.has_api_key;
       }
-    });
+      renderModels(error);
+    };
+    refreshModels.disabled = !settings.has_api_key;
+    refreshModels.addEventListener("click", () => void loadModels());
+    renderModels();
+    void loadModels();
     const limit = h("input", {
       type: "number",
       class: "field",
