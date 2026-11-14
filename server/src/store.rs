@@ -35,6 +35,8 @@ pub struct ElementPatch {
     pub body: Option<String>,
     /// 分岐先・条件などの構造データ（種類ごとに検証する）。
     pub attrs: Option<serde_json::Value>,
+    /// キャラクターへの参照。`Some(None)` で外す。
+    pub character_id: Option<Option<String>>,
 }
 
 pub(crate) fn new_id() -> String {
@@ -130,6 +132,7 @@ pub(crate) fn element_from_row(row: &Row) -> rusqlite::Result<Element> {
         kind: row.get("kind")?,
         body: row.get("body")?,
         speaker: row.get("speaker")?,
+        character_id: row.get("character_id")?,
         attrs: serde_json::from_str(&attrs).unwrap_or_else(|_| json!({})),
         position: row.get("position")?,
         origin: row.get("origin")?,
@@ -453,7 +456,21 @@ impl Store {
         content: ElementContent,
         position: Option<i64>,
     ) -> Result<Element> {
+        self.create_element_with_character(scene_id, content, position, None)
+    }
+
+    /// 要素を追加し、キャラクターを結びつける（同じプロジェクトのキャラクターに限る）。
+    pub fn create_element_with_character(
+        &mut self,
+        scene_id: &str,
+        content: ElementContent,
+        position: Option<i64>,
+        character_id: Option<&str>,
+    ) -> Result<Element> {
         self.get_scene(scene_id)?;
+        if let Some(c) = character_id {
+            self.check_character_for_scene(scene_id, c)?;
+        }
         let content = clean_content(content)?;
         let tx = self.conn.transaction()?;
         let count: i64 = tx.query_row(
@@ -467,6 +484,9 @@ impl Store {
             params![scene_id, position],
         )?;
         let id = insert_element(&tx, scene_id, &content, position, ORIGIN_HUMAN)?;
+        if let Some(c) = character_id {
+            tx.execute("UPDATE elements SET character_id = ?2 WHERE id = ?1", params![id, c])?;
+        }
         record_element(&tx, scene_id, &id, ACTION_CREATE, ACTOR_HUMAN, None, Some(&content), None)?;
         touch_scene(&tx, scene_id)?;
         tx.commit()?;
@@ -497,10 +517,16 @@ impl Store {
             Some(a) => Some(self.clean_attrs(&current.scene_id, &content.kind, a)?),
             None => None,
         };
+        if let Some(Some(c)) = &patch.character_id {
+            self.check_character_for_scene(&current.scene_id, c)?;
+        }
         let tx = self.conn.transaction()?;
         update_element_content(&tx, id, &content, origin)?;
         if let Some(a) = &attrs {
             tx.execute("UPDATE elements SET attrs = ?2 WHERE id = ?1", params![id, a.to_string()])?;
+        }
+        if let Some(c) = &patch.character_id {
+            tx.execute("UPDATE elements SET character_id = ?2 WHERE id = ?1", params![id, c])?;
         }
         record_element(&tx, &current.scene_id, id, ACTION_UPDATE, ACTOR_HUMAN, Some(&previous), Some(&content), None)?;
         touch_scene(&tx, &current.scene_id)?;
@@ -662,6 +688,7 @@ impl Store {
         let exported_at: String = self
             .conn
             .query_row(&format!("SELECT {NOW}"), [], |r| r.get(0))?;
+        let (characters, relations) = self.characters_json(project_id)?;
         Ok(json!({
             "format": "scenote-project",
             "schema_version": SCHEMA_VERSION,
@@ -669,6 +696,8 @@ impl Store {
             "project": tree.project,
             "chapters": chapters,
             "reference_files": self.list_files(project_id)?,
+            "characters": characters,
+            "character_relations": relations,
         }))
     }
 }

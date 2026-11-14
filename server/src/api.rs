@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::auth::{self, Device, Pairing, Principal};
-use crate::characters::{self, Character, CreateCharacter, UpdateCharacter};
+use crate::characters::{Character, CharacterFact, CharacterRelation, CreateCharacter, InfoInput, UpdateCharacter};
 use crate::error::{AppError, Result};
 use crate::sync::{self, EventSender};
 use crate::model::*;
@@ -151,6 +151,10 @@ pub fn router(state: AppState, web_dir: Option<&FsPath>) -> Router {
         .route("/settings/preferences", put(update_preference_settings))
         .route("/projects/{id}/characters", get(list_characters).post(create_character))
         .route("/characters/{id}", get(get_character).patch(update_character).delete(delete_character))
+        .route("/characters/{id}/facts", get(list_facts).post(create_fact))
+        .route("/character-facts/{id}", patch(update_fact).delete(delete_fact))
+        .route("/projects/{id}/character-relations", get(list_relations).post(create_relation))
+        .route("/character-relations/{id}", patch(update_relation).delete(delete_relation))
         .route("/projects/{id}/variables", get(list_variables).post(create_variable))
         .route("/variables/{id}", patch(update_variable).delete(delete_variable))
         .route("/projects/{id}/structure", get(project_structure))
@@ -235,31 +239,81 @@ async fn delete_project(State(s): State<AppState>, Path(id): Path<String>) -> Re
 // ---- キャラクター -----------------------------------------------------
 
 async fn list_characters(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<Vec<Character>>> {
-    let store = s.store();
-    store.get_project(&id)?;
-    Ok(Json(characters::list(&store, &id)?))
+    Ok(Json(s.store().list_characters(&id)?))
 }
 
 async fn create_character(
-    State(s): State<AppState>, Path(id): Path<String>, Json(req): Json<CreateCharacter>,
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<CreateCharacter>,
 ) -> Result<(StatusCode, Json<Character>)> {
-    let mut store = s.store();
-    let character = characters::create(&mut store, &id, req)?;
-    Ok((StatusCode::CREATED, Json(character)))
+    Ok((StatusCode::CREATED, Json(s.store().create_character(&id, req)?)))
 }
 
 async fn get_character(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<Character>> {
-    Ok(Json(characters::get(&s.store(), &id)?))
+    Ok(Json(s.store().get_character(&id)?))
 }
 
 async fn update_character(
-    State(s): State<AppState>, Path(id): Path<String>, Json(req): Json<UpdateCharacter>,
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateCharacter>,
 ) -> Result<Json<Character>> {
-    Ok(Json(characters::update(&mut s.store(), &id, req)?))
+    Ok(Json(s.store().update_character(&id, req)?))
 }
 
 async fn delete_character(State(s): State<AppState>, Path(id): Path<String>) -> Result<StatusCode> {
-    characters::delete(&mut s.store(), &id)?;
+    s.store().delete_character(&id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_facts(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<Vec<CharacterFact>>> {
+    Ok(Json(s.store().list_facts(&id)?))
+}
+
+async fn create_fact(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<InfoInput>,
+) -> Result<(StatusCode, Json<CharacterFact>)> {
+    Ok((StatusCode::CREATED, Json(s.store().create_fact(&id, req)?)))
+}
+
+async fn update_fact(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<InfoInput>,
+) -> Result<Json<CharacterFact>> {
+    Ok(Json(s.store().update_fact(&id, req)?))
+}
+
+async fn delete_fact(State(s): State<AppState>, Path(id): Path<String>) -> Result<StatusCode> {
+    s.store().delete_fact(&id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_relations(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<Vec<CharacterRelation>>> {
+    Ok(Json(s.store().list_relations(&id)?))
+}
+
+async fn create_relation(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<InfoInput>,
+) -> Result<(StatusCode, Json<CharacterRelation>)> {
+    Ok((StatusCode::CREATED, Json(s.store().create_relation(&id, req)?)))
+}
+
+async fn update_relation(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<InfoInput>,
+) -> Result<Json<CharacterRelation>> {
+    Ok(Json(s.store().update_relation(&id, req)?))
+}
+
+async fn delete_relation(State(s): State<AppState>, Path(id): Path<String>) -> Result<StatusCode> {
+    s.store().delete_relation(&id)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -346,6 +400,7 @@ struct CreateElement {
     #[serde(flatten)]
     content: ElementContent,
     position: Option<i64>,
+    character_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -355,6 +410,14 @@ struct UpdateElement {
     speaker: Option<String>,
     body: Option<String>,
     attrs: Option<Value>,
+    /// 省略: 変更なし、null: 外す、文字列: 結びつける。
+    #[serde(default, deserialize_with = "nullable")]
+    character_id: Option<Option<String>>,
+}
+
+/// 「省略」と「null」を区別して受け取る。
+fn nullable<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(d).map(Some)
 }
 
 /// 要素の変更結果。場面のリビジョンも進むため、併せて返す。
@@ -369,7 +432,7 @@ async fn create_element(
     Json(req): Json<CreateElement>,
 ) -> Result<(StatusCode, Json<Value>)> {
     let mut store = s.store();
-    let element = store.create_element(&id, req.content, req.position)?;
+    let element = store.create_element_with_character(&id, req.content, req.position, req.character_id.as_deref())?;
     Ok((StatusCode::CREATED, element_response(&store, element)?))
 }
 
@@ -383,6 +446,7 @@ async fn update_element(
         speaker: req.speaker,
         body: req.body,
         attrs: req.attrs,
+        character_id: req.character_id,
     };
     let mut store = s.store();
     let element = store.update_element(&id, req.base_revision, patch)?;
