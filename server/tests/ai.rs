@@ -751,3 +751,45 @@ async fn staged_generation_returns_drafts_without_saving() {
     let (_, usage) = call(&env.app, "GET", "/api/usage", None).await;
     assert_eq!(usage["requests"], 3);
 }
+
+#[tokio::test]
+async fn compose_applies_written_text_and_proposes_requests() {
+    let env = setup().await;
+    let compose = |content: &str| json!({ "content": content, "scene_id": env.scene, "compose": true });
+
+    // 本文として書いた内容: 要素に整えて、すぐ反映する。
+    env.llm.reply(json!({ "intent": "write", "reply": "本文に追加しました", "proposals": [
+        { "op": "insert_element", "after": "end", "kind": "Narration", "body": "雷が鳴った。" },
+        { "op": "insert_element", "after": "end", "kind": "Dialogue", "speaker": "アリス", "body": "「きゃっ」" },
+        { "op": "insert_element", "after": "end", "kind": "Choice", "body": "- 逃げる\n- 立ち向かう", "options": ["逃げる", "立ち向かう", ""] }
+    ] }));
+    let (status, ex) = call(&env.app, "POST", &format!("/api/chats/{}/messages", env.chat), Some(compose("雷が鳴った。アリス「きゃっ」 選択肢：逃げる／立ち向かう"))).await;
+    assert_eq!(status, StatusCode::OK, "{ex}");
+    assert!(env.llm.seen.lock().unwrap().last().unwrap().system.contains("かんたん執筆モード"));
+    let proposals = ex["messages"][1]["proposals"].as_array().unwrap();
+    assert!(proposals.iter().all(|p| p["status"] == "approved" && p["auto_applied"] == true));
+    let (_, scene) = call(&env.app, "GET", &format!("/api/scenes/{}", env.scene), None).await;
+    let els = scene["elements"].as_array().unwrap();
+    assert_eq!(els.len(), 6);
+    assert_eq!((els[4]["speaker"].as_str(), els[4]["body"].as_str()), (Some("アリス"), Some("「きゃっ」")));
+    assert_eq!(els[5]["kind"], "Choice");
+    assert_eq!(els[5]["attrs"]["options"].as_array().unwrap().len(), 2);
+    // 自動で反映した分は、嗜好の分析に数えない。
+    let (_, profile) = call(&env.app, "GET", &format!("/api/projects/{}/preferences", env.project), None).await;
+    assert_eq!(profile["unanalyzed"], 0);
+
+    // 変更の依頼・展開の相談: 提案するだけで、反映しない。
+    env.llm.reply(json!({ "intent": "request", "reply": "台詞を変える案です", "proposals": [
+        { "op": "update_element", "target": "e2", "body": "ようこそ、嵐の夜に。" }
+    ] }));
+    let (_, ex) = call(&env.app, "POST", &format!("/api/chats/{}/messages", env.chat), Some(compose("執事の台詞をもっと不穏にして"))).await;
+    assert_eq!(ex["messages"][1]["proposals"][0]["status"], "pending");
+    assert_eq!(env.bodies().await[1], "ようこそ。");
+
+    // intent がない応答や、通常のチャット（compose なし）では、write でも自動で反映しない。
+    env.llm.reply(json!({ "intent": "write", "reply": "x", "proposals": [{ "op": "insert_element", "after": "end", "kind": "Narration", "body": "勝手に" }] }));
+    let (_, ex) = env.send("書いて").await;
+    assert_eq!(ex["messages"][1]["proposals"][0]["status"], "pending");
+    assert!(!env.llm.last_prompt().is_empty());
+    assert!(!env.llm.seen.lock().unwrap().last().unwrap().system.contains("かんたん執筆モード"));
+}

@@ -179,7 +179,7 @@ export const api = {
   deleteChat: (id: string) => request<void>("DELETE", `/chats/${id}`),
   sendMessage: (
     chatId: string,
-    input: { content: string; scene_id: string | null; include_file_ids: string[]; exclude_file_ids: string[] },
+    input: { content: string; scene_id: string | null; include_file_ids: string[]; exclude_file_ids: string[]; compose?: boolean },
   ) => request<Exchange>("POST", `/chats/${chatId}/messages`, input),
   approveProposal: (id: string) => request<Proposal>("POST", `/proposals/${id}/approve`, {}),
   rejectProposal: (id: string, reason: string) => request<Proposal>("POST", `/proposals/${id}/reject`, { reason }),

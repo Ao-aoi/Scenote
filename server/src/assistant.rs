@@ -37,7 +37,25 @@ pub struct SendRequest {
     pub include_file_ids: Vec<String>,
     /// この依頼に限って参照から外すファイル。
     pub exclude_file_ids: Vec<String>,
+    /// かんたん執筆: 入力が本文として書いた内容なら、要素に整えてすぐ反映する。
+    pub compose: bool,
 }
+
+/// かんたん執筆で、入力の種類を AI に判断させるための追加の指示。
+const COMPOSE_RULES: &str = r#"
+
+## かんたん執筆モード
+ユーザーはスマートフォンから本文を書いています。入力を次のどちらかに分け、JSON に "intent" を加えてください。
+
+- "write": 入力そのものが本文として書かれた内容（地の文・台詞・動作・演出・選択肢）の場合。
+  入力の文章をできるだけそのまま使い、要素に分けて insert_element（after は "end"）で並べます。文章を書き換えたり、書かれていない内容を足したりしないでください。
+  台詞は「名前「…」」「名前：…」などの書き方から話者を読み取り、kind を Dialogue、speaker を名前にします。
+  選択肢は kind を Choice にし、"options" に各選択肢の文を配列で入れます（body には選択肢を箇条書きで書きます）。
+  reply は「本文に追加しました」など短くします。
+- "request": 変更の依頼（「〜を変えて」）や展開の相談（「こういう展開にして」「続きを考えて」）の場合。
+  通常どおり提案を出します（ユーザーが承認したものだけが反映されます）。reply で意図を簡潔に説明します。
+
+判断に迷う場合は "request" とします。"#;
 
 #[derive(Debug, Serialize)]
 pub struct Exchange {
@@ -385,6 +403,33 @@ fn validate_one(
                 Some(_) => element("after")?.1.id.clone(),
             };
             let after = content(None)?;
+            // 選択肢は、各項目の文を構造データ（移動先などは未設定）として持たせる。
+            if after.kind == KIND_CHOICE {
+                if let Some(options) = raw.get("options").and_then(Value::as_array) {
+                    let options: Vec<Value> = options
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::trim)
+                        .filter(|t| !t.is_empty() && t.chars().count() <= 500)
+                        .take(20)
+                        .map(|t| json!({ "text": t, "target": null, "condition": "", "effects": "" }))
+                        .collect();
+                    if !options.is_empty() {
+                        let mut value = to_json(&after);
+                        value["attrs"] = json!({ "options": options });
+                        return Ok(Some(NewProposal {
+                            op: OP_INSERT_ELEMENT,
+                            target_id: None,
+                            scene_id: Some(scene.scene.id.clone()),
+                            anchor: Some(anchor),
+                            base_revision: None,
+                            before: None,
+                            after: Some(value),
+                            reason,
+                        }));
+                    }
+                }
+            }
             Ok(Some(NewProposal {
                 op: OP_INSERT_ELEMENT,
                 target_id: None,
@@ -617,8 +662,9 @@ pub async fn send_message(
         role: Role::User,
         text: build_context(&tree, scene.as_ref(), &files, &chat, &preferences, &variables, &content),
     });
+    let compose = request.compose && scene.is_some();
     let llm_request = LlmRequest {
-        system: SYSTEM_PROMPT.to_string(),
+        system: if compose { format!("{SYSTEM_PROMPT}{COMPOSE_RULES}") } else { SYSTEM_PROMPT.to_string() },
         messages,
     };
     let response = provider
@@ -646,6 +692,31 @@ pub async fn send_message(
         &warnings,
         &proposals,
     )?;
+    // かんたん執筆で「本文として書いた内容」と判断された場合は、追加の提案をすぐ反映する。
+    // 本人が書いた文章を要素に整えただけなので確認を挟まない。嗜好の学習には数えない。
+    let intent = extract_json(&response.text)
+        .and_then(|v| v.get("intent").and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_default();
+    let messages = if compose && intent == "write" {
+        if let Some(reply) = messages.last() {
+            let inserts: Vec<String> = reply
+                .proposals
+                .iter()
+                .filter(|p| p.op == OP_INSERT_ELEMENT)
+                .map(|p| p.id.clone())
+                .collect();
+            for id in inserts {
+                s.approve_proposal(&id)?;
+                s.mark_auto_applied(&id)?;
+            }
+            let chat_messages = s.list_messages(chat_id)?;
+            chat_messages.into_iter().rev().take(2).rev().collect()
+        } else {
+            messages
+        }
+    } else {
+        messages
+    };
     Ok(Exchange {
         messages,
         usage: s.usage_status()?,

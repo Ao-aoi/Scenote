@@ -665,6 +665,8 @@ struct SendMessage {
     include_file_ids: Vec<String>,
     #[serde(default)]
     exclude_file_ids: Vec<String>,
+    #[serde(default)]
+    compose: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -720,6 +722,7 @@ async fn send_message(
         scene_id: req.scene_id,
         include_file_ids: req.include_file_ids,
         exclude_file_ids: req.exclude_file_ids,
+        compose: req.compose,
     };
     let exchange = assistant::send_message(
         &s.store,

@@ -219,6 +219,12 @@ impl Store {
             tx.pragma_update(None, "user_version", 7)?;
             tx.commit()?;
         }
+        if version < 8 {
+            let tx = self.conn.transaction()?;
+            tx.execute_batch(include_str!("schema_v8.sql"))?;
+            tx.pragma_update(None, "user_version", 8)?;
+            tx.commit()?;
+        }
         Ok(())
     }
 

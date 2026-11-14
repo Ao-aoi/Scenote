@@ -142,6 +142,8 @@ export interface Proposal {
   result_id: string | null;
   /** 人間が修正して採用した場合の、実際に反映した内容。 */
   final_content: ProposalContent | null;
+  /** かんたん執筆で、確認を挟まずに反映したもの。 */
+  auto_applied: boolean;
   diff: DiffSegment[];
 }
 

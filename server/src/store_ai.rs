@@ -107,6 +107,8 @@ pub struct Proposal {
     pub result_id: Option<String>,
     /// 人間が修正して採用した場合の、実際に反映した内容。
     pub final_content: Option<Value>,
+    /// かんたん執筆で、確認を挟まずに反映したもの。
+    pub auto_applied: bool,
     /// 本文（要素の `body`、ファイルの `content`）の変更前後の差分。
     pub diff: Vec<Segment>,
     #[serde(skip)]
@@ -236,6 +238,7 @@ fn proposal_from_row(row: &Row) -> rusqlite::Result<Proposal> {
         reject_reason: row.get("reject_reason")?,
         result_id: row.get("result_id")?,
         final_content,
+        auto_applied: row.get::<_, i64>("auto_applied")? != 0,
         diff,
         project_id: row.get("project_id")?,
         ordinal: row.get("ordinal")?,
@@ -573,6 +576,15 @@ impl Store {
         Ok(proposal)
     }
 
+    /// かんたん執筆で自動で反映した提案に印を付ける（嗜好の分析の対象から外す）。
+    pub fn mark_auto_applied(&mut self, id: &str) -> Result<()> {
+        self.conn.execute(
+            &format!("UPDATE proposals SET analyzed_at = {NOW}, auto_applied = 1 WHERE id = ?1"),
+            [id],
+        )?;
+        Ok(())
+    }
+
     /// 提案を却下する。却下した提案が後から適用されることはない。
     pub fn reject_proposal(&mut self, id: &str, reason: &str) -> Result<Proposal> {
         self.pending_proposal(id)?;
@@ -645,6 +657,9 @@ impl Store {
                             params![scene_id, position],
                         )?;
                         let new_id = insert_element(&tx, scene_id, &content, position, element_origin)?;
+                        if let Some(attrs) = proposal.after.as_ref().and_then(|a| a.get("attrs")).filter(|a| a.is_object()) {
+                            tx.execute("UPDATE elements SET attrs = ?2 WHERE id = ?1", params![new_id, attrs.to_string()])?;
+                        }
                         record_element(&tx, scene_id, &new_id, ACTION_CREATE, actor, None, Some(&content), Some(id))?;
                         touch_scene(&tx, scene_id)?;
                         Some(Some(new_id))
