@@ -67,6 +67,15 @@ async fn characters_round_trip_through_api_export_and_snapshots() {
     assert_eq!(upd["element"]["character_id"], Value::Null);
     let (_, upd) = call(&app, "PATCH", &format!("/api/elements/{eid}"), Some(json!({ "base_revision": 3, "character_id": aid }))).await;
     assert_eq!(upd["element"]["character_id"], aid.as_str());
+    // 履歴にキャラクターの結びつけが残る（作成時と、紐付けだけの変更）。
+    let (_, h) = call(&app, "GET", &format!("/api/projects/{pid}/history?scene_id={sid}"), None).await;
+    let h = h.as_array().unwrap();
+    let created_entry = h.iter().find(|e| e["action"] == "create" && e["target_id"] == eid.as_str()).unwrap();
+    assert_eq!(created_entry["after"]["character_id"], aid.as_str());
+    let update_entry = h.iter().find(|e| e["action"] == "update" && e["target_id"] == eid.as_str()).unwrap();
+    assert_eq!(update_entry["before"]["character_id"], aid.as_str());
+    assert_eq!(update_entry["after"]["character_id"], aid.as_str());
+    assert_ne!(update_entry["before"], update_entry["after"]);
     // 他プロジェクトのキャラクターは結びつけられない。
     let (_, other) = call(&app, "POST", "/api/projects", Some(json!({ "name": "別作品" }))).await;
     let (_, foreign) = call(&app, "POST", &format!("/api/projects/{}/characters", other["id"].as_str().unwrap()), Some(json!({ "name": "他人" }))).await;

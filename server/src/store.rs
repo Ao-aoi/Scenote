@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::error::{AppError, Result};
-use crate::history::{self as hist, record_element, ACTION_CREATE, ACTION_DELETE, ACTION_REORDER, ACTION_UPDATE, ACTOR_HUMAN};
+use crate::history::{self as hist, record_element, record_element_linked, ACTION_CREATE, ACTION_DELETE, ACTION_REORDER, ACTION_UPDATE, ACTOR_HUMAN};
 use crate::markdown::{self, ChapterDoc, ProjectDoc, SceneDoc};
 use crate::model::*;
 
@@ -579,7 +579,7 @@ impl Store {
         if let Some(c) = character_id {
             tx.execute("UPDATE elements SET character_id = ?2 WHERE id = ?1", params![id, c])?;
         }
-        record_element(&tx, scene_id, &id, ACTION_CREATE, ACTOR_HUMAN, None, Some(&content), None)?;
+        record_element_linked(&tx, scene_id, &id, ACTION_CREATE, ACTOR_HUMAN, None, Some((&content, character_id)))?;
         touch_scene(&tx, scene_id)?;
         tx.commit()?;
         self.get_element(&id)
@@ -620,7 +620,19 @@ impl Store {
         if let Some(c) = &patch.character_id {
             tx.execute("UPDATE elements SET character_id = ?2 WHERE id = ?1", params![id, c])?;
         }
-        record_element(&tx, &current.scene_id, id, ACTION_UPDATE, ACTOR_HUMAN, Some(&previous), Some(&content), None)?;
+        let after_character = match &patch.character_id {
+            Some(c) => c.as_deref(),
+            None => current.character_id.as_deref(),
+        };
+        record_element_linked(
+            &tx,
+            &current.scene_id,
+            id,
+            ACTION_UPDATE,
+            ACTOR_HUMAN,
+            Some((&previous, current.character_id.as_deref())),
+            Some((&content, after_character)),
+        )?;
         touch_scene(&tx, &current.scene_id)?;
         tx.commit()?;
         self.get_element(id)
@@ -643,7 +655,7 @@ impl Store {
         let element = self.get_element(id)?;
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM elements WHERE id = ?1", [id])?;
-        record_element(&tx, &element.scene_id, id, ACTION_DELETE, ACTOR_HUMAN, Some(&content_of(&element)), None, None)?;
+        record_element_linked(&tx, &element.scene_id, id, ACTION_DELETE, ACTOR_HUMAN, Some((&content_of(&element), element.character_id.as_deref())), None)?;
         renumber(&tx, "elements", "scene_id", &element.scene_id)?;
         touch_scene(&tx, &element.scene_id)?;
         tx.commit()?;

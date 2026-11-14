@@ -317,6 +317,39 @@ pub(crate) fn record_element(
     )
 }
 
+/// 要素の変更を、結びつけたキャラクター（`character_id`）とともに記録する。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn record_element_linked(
+    tx: &Transaction,
+    scene_id: &str,
+    element_id: &str,
+    action: &str,
+    actor: &str,
+    before: Option<(&ElementContent, Option<&str>)>,
+    after: Option<(&ElementContent, Option<&str>)>,
+) -> Result<()> {
+    let project_id = project_of_scene(tx, scene_id)?;
+    let to_value = |(c, character): (&ElementContent, Option<&str>)| {
+        let mut v = element_value(&c.kind, &c.speaker, &c.body);
+        v["character_id"] = json!(character);
+        v
+    };
+    record(
+        tx,
+        Change {
+            project_id: &project_id,
+            scene_id: Some(scene_id),
+            target_type: TARGET_ELEMENT,
+            target_id: element_id,
+            action,
+            actor,
+            before: before.map(to_value),
+            after: after.map(to_value),
+            proposal_id: None,
+        },
+    )
+}
+
 fn scene_markdown_of(scene: &SnapshotScene) -> String {
     let contents: Vec<ElementContent> = scene
         .elements
