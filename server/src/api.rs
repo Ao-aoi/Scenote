@@ -15,6 +15,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use crate::auth::{self, Device, Pairing, Principal};
 use crate::characters::{Character, CharacterFact, CharacterRelation, CreateCharacter, InfoInput, UpdateCharacter};
 use crate::error::{AppError, Result};
+use crate::generation;
 use crate::sync::{self, EventSender};
 use crate::model::*;
 use crate::assistant::{self, Exchange, SendRequest};
@@ -110,6 +111,10 @@ pub fn router(state: AppState, web_dir: Option<&FsPath>) -> Router {
         )
         .route("/projects/{id}/chapters", post(create_chapter))
         .route("/projects/{id}/chapters/order", put(reorder_chapters))
+        .route("/projects/{id}/outline", post(append_outline))
+        .route("/projects/{id}/generate/characters", post(generate_characters))
+        .route("/projects/{id}/generate/world", post(generate_world))
+        .route("/projects/{id}/generate/story", post(generate_story))
         .route("/projects/{id}/export/markdown", get(export_markdown))
         .route("/projects/{id}/export/json", get(export_json))
         .route("/chapters/{id}", patch(rename_chapter).delete(delete_chapter))
@@ -362,21 +367,83 @@ async fn reorder_chapters(
 async fn create_scene(
     State(s): State<AppState>,
     Path(id): Path<String>,
-    Json(req): Json<TitleBody>,
+    Json(req): Json<CreateSceneBody>,
 ) -> Result<(StatusCode, Json<Scene>)> {
-    Ok((StatusCode::CREATED, Json(s.store().create_scene(&id, &req.title)?)))
+    let scene = s.store().create_scene_with_summary(&id, &req.title, &req.summary, req.after.as_deref())?;
+    Ok((StatusCode::CREATED, Json(scene)))
 }
 
 async fn scene_detail(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<SceneDetail>> {
     Ok(Json(s.store().scene_detail(&id)?))
 }
 
+#[derive(Deserialize)]
+struct UpdateSceneBody {
+    title: Option<String>,
+    summary: Option<String>,
+    /// 概要を変更する場合に必須（競合検出のため）。
+    base_revision: Option<i64>,
+}
+
 async fn rename_scene(
     State(s): State<AppState>,
     Path(id): Path<String>,
-    Json(req): Json<TitleBody>,
+    Json(req): Json<UpdateSceneBody>,
 ) -> Result<Json<Scene>> {
-    Ok(Json(s.store().rename_scene(&id, &req.title)?))
+    let mut store = s.store();
+    let mut scene = store.get_scene(&id)?;
+    if let Some(summary) = req.summary {
+        let base = req
+            .base_revision
+            .ok_or_else(|| AppError::Invalid("概要を変更するには base_revision を指定してください".into()))?;
+        scene = store.update_scene_summary(&id, base, &summary)?;
+    }
+    if let Some(title) = req.title {
+        scene = store.rename_scene(&id, &title)?;
+    }
+    Ok(Json(scene))
+}
+
+#[derive(Deserialize)]
+struct CreateSceneBody {
+    title: String,
+    #[serde(default)]
+    summary: String,
+    /// この場面の直後に追加する（省略時は章の末尾）。
+    after: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct OutlineScene {
+    title: String,
+    #[serde(default)]
+    summary: String,
+}
+
+#[derive(Deserialize)]
+struct OutlineChapter {
+    title: String,
+    #[serde(default)]
+    scenes: Vec<OutlineScene>,
+}
+
+#[derive(Deserialize)]
+struct OutlineBody {
+    chapters: Vec<OutlineChapter>,
+}
+
+/// 章・場面（概要つき）をまとめて末尾に追加する。
+async fn append_outline(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<OutlineBody>,
+) -> Result<(StatusCode, Json<Vec<Scene>>)> {
+    let chapters: Vec<(String, Vec<(String, String)>)> = req
+        .chapters
+        .into_iter()
+        .map(|c| (c.title, c.scenes.into_iter().map(|s| (s.title, s.summary)).collect()))
+        .collect();
+    Ok((StatusCode::CREATED, Json(s.store().append_outline(&id, &chapters)?)))
 }
 
 async fn delete_scene(State(s): State<AppState>, Path(id): Path<String>) -> Result<StatusCode> {
@@ -848,6 +915,7 @@ struct ImportBody {
 struct PreferenceSettingsBody {
     auto_update: Option<bool>,
     include_direct_edits: Option<bool>,
+    auto_analyze: Option<bool>,
 }
 
 async fn preference_profile(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<Profile>> {
@@ -916,7 +984,7 @@ async fn update_preference_settings(
     Json(req): Json<PreferenceSettingsBody>,
 ) -> Result<Json<preferences::PreferenceSettings>> {
     let mut store = s.store();
-    store.update_preference_settings(req.auto_update, req.include_direct_edits)?;
+    store.update_preference_settings(req.auto_update, req.include_direct_edits, req.auto_analyze)?;
     Ok(Json(store.preference_settings()?))
 }
 
@@ -1071,4 +1139,44 @@ async fn delete_variable(State(s): State<AppState>, Path(id): Path<String>) -> R
 
 async fn project_structure(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<Structure>> {
     Ok(Json(s.store().structure(&id)?))
+}
+
+// ---- AI による段階的な生成（#6） ----------------------------------------
+
+async fn generate_characters(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<generation::GenerateRequest>,
+) -> Result<Json<generation::Drafts<Vec<generation::CharacterDraft>>>> {
+    Ok(Json(generation::characters(&s.store, s.provider.as_ref(), s.env_api_key.as_deref(), &id, req).await?))
+}
+
+async fn generate_world(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<generation::GenerateRequest>,
+) -> Result<Json<generation::Drafts<generation::WorldDraft>>> {
+    Ok(Json(generation::world(&s.store, s.provider.as_ref(), s.env_api_key.as_deref(), &id, req).await?))
+}
+
+async fn generate_story(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<generation::GenerateRequest>,
+) -> Result<Json<generation::Drafts<Vec<generation::ChapterDraft>>>> {
+    Ok(Json(generation::story(&s.store, s.provider.as_ref(), s.env_api_key.as_deref(), &id, req).await?))
+}
+
+/// 定期的な処理（自動分析）を始める。分析したら、各端末に嗜好の変更を通知する。
+pub fn start_background_tasks(state: AppState) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            tick.tick().await;
+            let done = preferences::run_auto_analysis(&state.store, state.provider.as_ref(), state.env_api_key.as_deref()).await;
+            if !done.is_empty() {
+                let _ = state.events.send(sync::ChangeEvent { kind: "change", scopes: vec!["prefs", "settings"], client: None, device_id: None });
+            }
+        }
+    });
 }

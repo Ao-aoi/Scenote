@@ -59,6 +59,8 @@ pub fn scopes_for(path: &str) -> Vec<&'static str> {
         ("snapshots", _) => vec!["snapshots", "tree", "scene", "files"],
         // 提案の承認は、場面・ファイル・チャットのすべてに影響しうる。
         ("proposals", _) => vec!["chat", "scene", "files", "history"],
+        ("projects", "outline") => vec!["tree", "scene"],
+        ("projects", "generate") => vec!["settings"],
         ("projects", _) => vec!["tree", "projects"],
         ("settings" | "usage", _) => vec!["settings"],
         _ => vec![],

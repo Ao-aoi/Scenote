@@ -123,6 +123,9 @@ pub struct SnapshotChapter {
 pub struct SnapshotScene {
     pub id: String,
     pub title: String,
+    /// 場面の概要。v7 より前のスナップショットにはない。
+    #[serde(default)]
+    pub summary: String,
     pub elements: Vec<SnapshotElement>,
 }
 
@@ -387,6 +390,7 @@ impl Store {
                 scenes.push(SnapshotScene {
                     id: scene.id.clone(),
                     title: scene.title.clone(),
+                    summary: scene.summary.clone(),
                     elements: detail
                         .elements
                         .into_iter()
@@ -516,7 +520,14 @@ impl Store {
                 .flat_map(|c| {
                     c.scenes
                         .iter()
-                        .map(move |s| (s.id.clone(), format!("{} / {}", c.title, s.title), scene_markdown_of(s)))
+                        .map(move |s| {
+                            let text = if s.summary.is_empty() {
+                                scene_markdown_of(s)
+                            } else {
+                                format!("【概要】{}\n\n{}", s.summary, scene_markdown_of(s))
+                            };
+                            (s.id.clone(), format!("{} / {}", c.title, s.title), text)
+                        })
                 })
                 .collect()
         };
@@ -661,10 +672,10 @@ impl Store {
                 let scene_id = if taken("scenes", &scene.id)? { new_id() } else { scene.id.clone() };
                 tx.execute(
                     &format!(
-                        "INSERT INTO scenes (id, chapter_id, title, position, revision, created_at, updated_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, {NOW}, {NOW})"
+                        "INSERT INTO scenes (id, chapter_id, title, summary, position, revision, created_at, updated_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, {NOW}, {NOW})"
                     ),
-                    params![scene_id, chapter_id, scene.title, si as i64, revision],
+                    params![scene_id, chapter_id, scene.title, scene.summary, si as i64, revision],
                 )?;
                 for (ei, e) in scene.elements.iter().enumerate() {
                     let element_id = if taken("elements", &e.id)? { new_id() } else { e.id.clone() };

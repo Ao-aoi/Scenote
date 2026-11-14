@@ -15,14 +15,17 @@ use crate::error::{AppError, Result};
 use crate::model::*;
 use crate::store::{
     clean_content, clean_title, content_of, element_from_row, insert_element, new_id, renumber,
-    touch_project, touch_scene, update_element_content, Store, NOW,
-};
+    touch_project, touch_scene, update_element_content, Store, NOW, clean_summary, record_summary};
 
 pub const OP_UPDATE_ELEMENT: &str = "update_element";
 pub const OP_INSERT_ELEMENT: &str = "insert_element";
 pub const OP_DELETE_ELEMENT: &str = "delete_element";
 pub const OP_UPDATE_FILE: &str = "update_file";
 pub const OP_CREATE_FILE: &str = "create_file";
+/// 場面の概要（プロット）の変更。
+pub const OP_UPDATE_SUMMARY: &str = "update_summary";
+/// 概要つきの場面の追加（指定した場面の直後）。
+pub const OP_INSERT_SCENE: &str = "insert_scene";
 
 pub const ANCHOR_START: &str = "@start";
 pub const ANCHOR_END: &str = "@end";
@@ -671,6 +674,49 @@ impl Store {
                     _ => None,
                 }
             }
+            OP_UPDATE_SUMMARY => {
+                // 提案の生成後に概要が書き換えられていたら反映しない。
+                let target = proposal.target_id.as_deref().unwrap_or("");
+                let current = tx
+                    .query_row("SELECT * FROM scenes WHERE id = ?1", [target], crate::store::scene_from_row)
+                    .optional()?;
+                match current {
+                    Some(sc) if sc.summary == text_of(&proposal.before, "body") => {
+                        let summary = clean_summary(text_of(&proposal.after, "body"))?;
+                        tx.execute("UPDATE scenes SET summary = ?2 WHERE id = ?1", params![sc.id, summary])?;
+                        record_summary(&tx, &proposal.project_id, &sc, &summary, actor, Some(id))?;
+                        touch_scene(&tx, &sc.id)?;
+                        Some(None)
+                    }
+                    _ => None,
+                }
+            }
+            OP_INSERT_SCENE => {
+                let anchor = proposal.anchor.as_deref().unwrap_or("");
+                let current = tx
+                    .query_row("SELECT * FROM scenes WHERE id = ?1", [anchor], crate::store::scene_from_row)
+                    .optional()?;
+                match current {
+                    Some(sc) => {
+                        let title = clean_title("場面の題名", text_of(&proposal.after, "title"))?;
+                        let summary = clean_summary(text_of(&proposal.after, "body"))?;
+                        let new_id = new_id();
+                        tx.execute(
+                            "UPDATE scenes SET position = position + 1 WHERE chapter_id = ?1 AND position > ?2",
+                            params![sc.chapter_id, sc.position],
+                        )?;
+                        tx.execute(
+                            &format!(
+                                "INSERT INTO scenes (id, chapter_id, title, summary, position, created_at, updated_at)
+                                 VALUES (?1, ?2, ?3, ?4, ?5, {NOW}, {NOW})"
+                            ),
+                            params![new_id, sc.chapter_id, title, summary, sc.position + 1],
+                        )?;
+                        Some(Some(new_id))
+                    }
+                    None => None,
+                }
+            }
             OP_CREATE_FILE => {
                 let name = clean_title("ファイル名", text_of(&proposal.after, "name"))?;
                 let content = clean_file_content(text_of(&proposal.after, "content").to_string())?;
@@ -732,6 +778,20 @@ impl Store {
                     _ => text_of(&proposal.after, "name").to_string(),
                 };
                 Ok(json!({ "name": name, "content": content }))
+            }
+            OP_UPDATE_SUMMARY | OP_INSERT_SCENE => {
+                let body = value
+                    .get("body")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| AppError::Invalid("修正内容の形式が正しくありません".into()))?;
+                let title = match proposal.op.as_str() {
+                    OP_INSERT_SCENE => clean_title(
+                        "場面の題名",
+                        value.get("title").and_then(Value::as_str).unwrap_or(text_of(&proposal.after, "title")),
+                    )?,
+                    _ => text_of(&proposal.after, "title").to_string(),
+                };
+                Ok(json!({ "title": title, "body": clean_summary(body)? }))
             }
             _ => Err(AppError::Invalid("削除の提案は修正できません".into())),
         }

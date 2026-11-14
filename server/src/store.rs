@@ -112,11 +112,12 @@ fn chapter_from_row(row: &Row) -> rusqlite::Result<Chapter> {
     })
 }
 
-fn scene_from_row(row: &Row) -> rusqlite::Result<Scene> {
+pub(crate) fn scene_from_row(row: &Row) -> rusqlite::Result<Scene> {
     Ok(Scene {
         id: row.get("id")?,
         chapter_id: row.get("chapter_id")?,
         title: row.get("title")?,
+        summary: row.get("summary")?,
         position: row.get("position")?,
         revision: row.get("revision")?,
         created_at: row.get("created_at")?,
@@ -210,6 +211,12 @@ impl Store {
             let tx = self.conn.transaction()?;
             tx.execute_batch(include_str!("schema_v6.sql"))?;
             tx.pragma_update(None, "user_version", 6)?;
+            tx.commit()?;
+        }
+        if version < 7 {
+            let tx = self.conn.transaction()?;
+            tx.execute_batch(include_str!("schema_v7.sql"))?;
+            tx.pragma_update(None, "user_version", 7)?;
             tx.commit()?;
         }
         Ok(())
@@ -408,6 +415,85 @@ impl Store {
         touch_scene(&tx, id)?;
         tx.commit()?;
         self.get_scene(id)
+    }
+
+    /// 場面の概要（プロット）を更新する。`base_revision` が古ければ競合として拒否する。
+    pub fn update_scene_summary(&mut self, id: &str, base_revision: i64, summary: &str) -> Result<Scene> {
+        let scene = self.get_scene(id)?;
+        if scene.revision != base_revision {
+            return Err(AppError::Conflict { current: scene.revision });
+        }
+        let summary = clean_summary(summary)?;
+        if summary == scene.summary {
+            return Ok(scene);
+        }
+        let project_id = self.get_chapter(&scene.chapter_id)?.project_id;
+        let tx = self.conn.transaction()?;
+        tx.execute("UPDATE scenes SET summary = ?2 WHERE id = ?1", params![id, summary])?;
+        record_summary(&tx, &project_id, &scene, &summary, ACTOR_HUMAN, None)?;
+        touch_scene(&tx, id)?;
+        tx.commit()?;
+        self.get_scene(id)
+    }
+
+    /// 章の末尾、または指定した場面の直後に、概要つきの場面を追加する。
+    pub fn create_scene_with_summary(&mut self, chapter_id: &str, title: &str, summary: &str, after: Option<&str>) -> Result<Scene> {
+        let chapter = self.get_chapter(chapter_id)?;
+        let title = clean_title("場面の題名", title)?;
+        let summary = clean_summary(summary)?;
+        let position = match after {
+            Some(a) => {
+                let s = self.get_scene(a)?;
+                if s.chapter_id != chapter_id {
+                    return Err(AppError::Invalid("同じ章の場面を指定してください".into()));
+                }
+                Some(s.position + 1)
+            }
+            None => None,
+        };
+        let tx = self.conn.transaction()?;
+        let id = insert_scene(&tx, chapter_id, &title)?;
+        if let Some(pos) = position {
+            tx.execute(
+                "UPDATE scenes SET position = position + 1 WHERE chapter_id = ?1 AND position >= ?2 AND id != ?3",
+                params![chapter_id, pos, id],
+            )?;
+            tx.execute("UPDATE scenes SET position = ?2 WHERE id = ?1", params![id, pos])?;
+        }
+        tx.execute("UPDATE scenes SET summary = ?2 WHERE id = ?1", params![id, summary])?;
+        touch_project(&tx, &chapter.project_id)?;
+        tx.commit()?;
+        self.get_scene(&id)
+    }
+
+    /// 章・場面（概要つき）をまとめて末尾に追加する（AI のストーリー案の採用などで使う）。
+    pub fn append_outline(&mut self, project_id: &str, chapters: &[(String, Vec<(String, String)>)]) -> Result<Vec<Scene>> {
+        self.get_project(project_id)?;
+        let mut cleaned = Vec::new();
+        for (title, scenes) in chapters {
+            let title = clean_title("章の題名", title)?;
+            let mut list = Vec::new();
+            for (st, summary) in scenes {
+                list.push((clean_title("場面の題名", st)?, clean_summary(summary)?));
+            }
+            cleaned.push((title, list));
+        }
+        if cleaned.is_empty() {
+            return Err(AppError::Invalid("追加する章がありません".into()));
+        }
+        let tx = self.conn.transaction()?;
+        let mut ids = Vec::new();
+        for (title, scenes) in &cleaned {
+            let chapter_id = insert_chapter(&tx, project_id, title)?;
+            for (st, summary) in scenes {
+                let id = insert_scene(&tx, &chapter_id, st)?;
+                tx.execute("UPDATE scenes SET summary = ?2 WHERE id = ?1", params![id, summary])?;
+                ids.push(id);
+            }
+        }
+        touch_project(&tx, project_id)?;
+        tx.commit()?;
+        ids.iter().map(|id| self.get_scene(id)).collect()
     }
 
     pub fn delete_scene(&mut self, id: &str) -> Result<()> {
@@ -811,6 +897,41 @@ pub(crate) fn touch_scene(tx: &Transaction, scene_id: &str) -> Result<()> {
         [scene_id],
     )?;
     Ok(())
+}
+
+const MAX_SUMMARY_CHARS: usize = 2000;
+
+pub(crate) fn clean_summary(summary: &str) -> Result<String> {
+    let s = summary.trim().replace("\r\n", "\n");
+    if s.chars().count() > MAX_SUMMARY_CHARS {
+        return Err(AppError::Invalid(format!("場面の概要は{MAX_SUMMARY_CHARS}文字以内にしてください")));
+    }
+    Ok(s)
+}
+
+/// 場面の概要の変更を履歴に残す。
+pub(crate) fn record_summary(
+    tx: &Transaction,
+    project_id: &str,
+    scene: &Scene,
+    summary: &str,
+    actor: &str,
+    proposal_id: Option<&str>,
+) -> Result<()> {
+    hist::record(
+        tx,
+        hist::Change {
+            project_id,
+            scene_id: Some(&scene.id),
+            target_type: hist::TARGET_SCENE,
+            target_id: &scene.id,
+            action: ACTION_UPDATE,
+            actor,
+            before: Some(serde_json::json!({ "title": scene.title, "body": scene.summary })),
+            after: Some(serde_json::json!({ "title": scene.title, "body": summary })),
+            proposal_id,
+        },
+    )
 }
 
 /// 場面の削除を、その時点の本文（Markdown 表現）とともに履歴に残す。

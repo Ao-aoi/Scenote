@@ -14,6 +14,7 @@ pub mod characters;
 pub mod assistant;
 pub mod auth;
 pub mod error;
+pub mod generation;
 pub mod history;
 pub mod llm;
 pub mod logic;

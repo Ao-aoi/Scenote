@@ -49,6 +49,7 @@ async fn main() {
     };
     let lan_urls = lan_urls(addr);
     let state = AppState::new(store, Arc::new(provider), env_api_key).with_lan_urls(lan_urls.clone());
+    api::start_background_tasks(state.clone());
     let app = api::router(state, Some(&web_dir));
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(listener) => listener,

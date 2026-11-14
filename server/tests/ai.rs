@@ -627,3 +627,127 @@ async fn preferences_are_learned_only_with_approval_by_default() {
     // 依頼 3 回 + 分析 2 回。分析の呼び出しも使用量に数える。
     assert_eq!(usage["requests"], 5);
 }
+
+// ---- プロット（場面の概要）・段階的な生成 ---------------------------------
+
+#[tokio::test]
+async fn plot_proposals_and_outline() {
+    let env = setup().await;
+    // 概要の手動更新（競合検出つき）。
+    let (_, scene) = call(&env.app, "GET", &format!("/api/scenes/{}", env.scene), None).await;
+    let rev = scene["revision"].as_i64().unwrap();
+    let (status, s) = call(&env.app, "PATCH", &format!("/api/scenes/{}", env.scene), Some(json!({ "summary": "アリスが館に着く。", "base_revision": rev }))).await;
+    assert_eq!(status, StatusCode::OK, "{s}");
+    assert_eq!(s["summary"], "アリスが館に着く。");
+    let (status, _) = call(&env.app, "PATCH", &format!("/api/scenes/{}", env.scene), Some(json!({ "summary": "古い画面から", "base_revision": rev }))).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, _) = call(&env.app, "PATCH", &format!("/api/scenes/{}", env.scene), Some(json!({ "summary": "x" }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // AI がプロットを提案する（承認するまで反映しない）。
+    env.llm.reply(json!({ "reply": "展開案です。", "proposals": [
+        { "op": "update_summary", "target": "s1", "summary": "アリスが嵐の夜に館へ着く。", "reason": "雰囲気" },
+        { "op": "insert_scene", "after": "s1", "title": "書斎", "summary": "執事が古い日記を見せる。", "reason": "続き" },
+        { "op": "update_summary", "target": "s9", "summary": "存在しない" }
+    ] }));
+    let (_, exchange) = env.send("続きを考えて").await;
+    assert!(env.llm.last_prompt().contains("[s1] 場面1"));
+    assert!(env.llm.last_prompt().contains("概要: アリスが館に着く。"));
+    let proposals = exchange["messages"][1]["proposals"].as_array().unwrap().clone();
+    assert_eq!(proposals.len(), 2);
+    assert_eq!(exchange["messages"][1]["warnings"].as_array().unwrap().len(), 1);
+    let (_, tree) = call(&env.app, "GET", &format!("/api/projects/{}", env.project), None).await;
+    assert_eq!(tree["chapters"][0]["scenes"].as_array().unwrap().len(), 1);
+
+    // 挿入は修正して採用、概要の変更はそのまま承認。
+    let (status, p) = call(&env.app, "POST", &format!("/api/proposals/{}/approve-edited", proposals[1]["id"].as_str().unwrap()),
+        Some(json!({ "content": { "title": "古い書斎", "body": "執事が古い日記を差し出す。" } }))).await;
+    assert_eq!(status, StatusCode::OK, "{p}");
+    assert_eq!(env.decide(&proposals[0], "approve").await["status"], "approved");
+    let (_, tree) = call(&env.app, "GET", &format!("/api/projects/{}", env.project), None).await;
+    let scenes = tree["chapters"][0]["scenes"].as_array().unwrap();
+    assert_eq!(scenes.len(), 2);
+    assert_eq!(scenes[0]["summary"], "アリスが嵐の夜に館へ着く。");
+    assert_eq!((scenes[1]["title"].as_str(), scenes[1]["summary"].as_str()), (Some("古い書斎"), Some("執事が古い日記を差し出す。")));
+
+    // 提案の後に概要を人間が書き換えていたら、反映しない。
+    env.llm.reply(json!({ "reply": "案", "proposals": [{ "op": "update_summary", "target": "s2", "summary": "別案" }] }));
+    let (_, exchange) = env.send("別案").await;
+    let p = exchange["messages"][1]["proposals"][0].clone();
+    let sid2 = scenes[1]["id"].as_str().unwrap();
+    call(&env.app, "PATCH", &format!("/api/scenes/{sid2}"), Some(json!({ "summary": "人間の案", "base_revision": scenes[1]["revision"] }))).await;
+    assert_eq!(env.decide(&p, "approve").await["status"], "stale");
+
+    // 章・場面をまとめて追加（ストーリー案の採用）。
+    let (status, added) = call(&env.app, "POST", &format!("/api/projects/{}/outline", env.project), Some(json!({ "chapters": [
+        { "title": "第2章", "scenes": [{ "title": "夜明け", "summary": "嵐が去る。" }, { "title": "出発", "summary": "" }] }
+    ] }))).await;
+    assert_eq!(status, StatusCode::CREATED, "{added}");
+    assert_eq!(added.as_array().unwrap().len(), 2);
+    let (status, _) = call(&env.app, "POST", &format!("/api/projects/{}/outline", env.project), Some(json!({ "chapters": [{ "title": "" }] }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // スナップショットに概要が残る。
+    let (_, snap) = call(&env.app, "POST", &format!("/api/projects/{}/snapshots", env.project), Some(json!({}))).await;
+    let (_, current) = call(&env.app, "GET", &format!("/api/scenes/{}", env.scene), None).await;
+    let (status, cleared) = call(&env.app, "PATCH", &format!("/api/scenes/{}", env.scene), Some(json!({ "summary": "", "base_revision": current["revision"] }))).await;
+    assert_eq!((status, cleared["summary"].as_str()), (StatusCode::OK, Some("")));
+    call(&env.app, "POST", &format!("/api/snapshots/{}/restore", snap["id"].as_str().unwrap()), None).await;
+    let (_, scene) = call(&env.app, "GET", &format!("/api/scenes/{}", env.scene), None).await;
+    assert_eq!(scene["summary"], "アリスが嵐の夜に館へ着く。");
+}
+
+#[tokio::test]
+async fn staged_generation_returns_drafts_without_saving() {
+    let env = setup().await;
+    // 概要がなければ生成しない。
+    let (status, _) = call(&env.app, "POST", &format!("/api/projects/{}/generate/characters", env.project), Some(json!({}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // ストーリーはキャラクター登録後のみ。
+    let (status, body) = call(&env.app, "POST", &format!("/api/projects/{}/generate/story", env.project), Some(json!({ "premise": "館もの" }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(env.llm.calls(), 0);
+
+    // 段階 1: キャラクター案（不正な案は除外し、保存はしない）。
+    call(&env.app, "POST", &format!("/api/projects/{}/characters", env.project), Some(json!({ "name": "執事" }))).await;
+    env.llm.reply(json!({ "characters": [
+        { "name": "アリス", "facts": [{ "category": "性格", "text": "好奇心旺盛" }, { "category": "", "text": "x" }] },
+        { "name": "執事", "facts": [] },
+        { "name": "", "facts": [] }
+    ] }));
+    let (status, drafts) = call(&env.app, "POST", &format!("/api/projects/{}/generate/characters", env.project),
+        Some(json!({ "premise": "嵐の夜の洋館ミステリー", "count": 3 }))).await;
+    assert_eq!(status, StatusCode::OK, "{drafts}");
+    assert_eq!(drafts["drafts"].as_array().unwrap().len(), 1);
+    assert_eq!(drafts["drafts"][0]["facts"].as_array().unwrap().len(), 1);
+    assert_eq!(drafts["warnings"].as_array().unwrap().len(), 2);
+    assert!(env.llm.last_prompt().contains("既存の登場人物（重複させない）\n執事"));
+    let (_, chars) = call(&env.app, "GET", &format!("/api/projects/{}/characters", env.project), None).await;
+    assert_eq!(chars.as_array().unwrap().len(), 1, "案は保存されない");
+
+    // 段階 2: 世界観（採用前のキャラクター案も参考にできる）。
+    env.llm.reply(json!({ "title": "世界観", "content": "## 舞台\n嵐に閉ざされた洋館。" }));
+    let (status, world) = call(&env.app, "POST", &format!("/api/projects/{}/generate/world", env.project),
+        Some(json!({ "premise": "嵐の夜の洋館ミステリー", "characters": drafts["drafts"] }))).await;
+    assert_eq!(status, StatusCode::OK, "{world}");
+    assert!(world["drafts"]["content"].as_str().unwrap().contains("洋館"));
+    assert!(env.llm.last_prompt().contains("好奇心旺盛"));
+    // 採用は既存の API で行う（世界観は参照ファイルとして登録）。
+    call(&env.app, "POST", &format!("/api/projects/{}/files", env.project), Some(json!({ "name": "世界観", "content": world["drafts"]["content"] }))).await;
+
+    // 段階 3: 登録済みのキャラクターと世界観を参照してストーリー案を作る。
+    env.llm.reply(json!({ "chapters": [
+        { "title": "第1章 嵐の訪問者", "scenes": [{ "title": "到着", "summary": "アリスが館に着く。" }] },
+        { "title": "空の章", "scenes": [] }
+    ] }));
+    let (status, story) = call(&env.app, "POST", &format!("/api/projects/{}/generate/story", env.project),
+        Some(json!({ "premise": "嵐の夜の洋館ミステリー", "instructions": "全3章で" }))).await;
+    assert_eq!(status, StatusCode::OK, "{story}");
+    assert_eq!(story["drafts"].as_array().unwrap().len(), 1);
+    let prompt = env.llm.last_prompt();
+    assert!(prompt.contains("## 執事") && prompt.contains("嵐に閉ざされた洋館") && prompt.contains("全3章で"));
+    let (_, tree) = call(&env.app, "GET", &format!("/api/projects/{}", env.project), None).await;
+    assert_eq!(tree["chapters"].as_array().unwrap().len(), 1, "案は保存されない");
+    // 使用量に数える。
+    let (_, usage) = call(&env.app, "GET", "/api/usage", None).await;
+    assert_eq!(usage["requests"], 3);
+}

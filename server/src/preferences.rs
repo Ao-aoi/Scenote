@@ -10,7 +10,7 @@
 use std::sync::Mutex;
 
 use rusqlite::{params, OptionalExtension, Row};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::assistant::extract_json;
@@ -70,9 +70,38 @@ pub struct Suggestion {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PreferenceSettings {
+    /// 分析結果（更新案）を承認なしでプロファイルに適用する。
     pub auto_update: bool,
     pub include_direct_edits: bool,
+    /// 条件を満たしたら、分析そのものを自動で実行する（#10）。
+    pub auto_analyze: bool,
 }
+
+/// 分析の実行状況（プロジェクトごと）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct AnalysisStatus {
+    /// idle / running / error
+    pub state: String,
+    /// 最後に成功した分析の日時（UTC）。
+    pub last_success_at: Option<String>,
+    /// 最後に失敗した分析の日時と理由。失敗しても以前のルールは残る。
+    pub last_error_at: Option<String>,
+    pub last_error: Option<String>,
+    /// 最後の実行のきっかけ（manual / auto）。
+    pub last_trigger: Option<String>,
+}
+
+/// 自動分析を始める、未分析の操作の件数。
+pub const AUTO_MIN_DECISIONS: i64 = 5;
+/// 最後の操作からこの時間（秒）が経つまでは自動分析しない（操作が続いている間にまとめるため）。
+pub const AUTO_IDLE_SECONDS: i64 = 10 * 60;
+/// 自動分析どうしの最小間隔（秒）。
+pub const AUTO_MIN_INTERVAL_SECONDS: i64 = 60 * 60;
+const KEY_AUTO_ANALYZE: &str = "preferences.auto_analyze";
+const STATUS_PREFIX: &str = "preferences.status.";
+
+/// 分析を同時に複数実行しないための目印（手動・自動の重複を防ぐ）。
+static ANALYZING: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Profile {
@@ -82,6 +111,7 @@ pub struct Profile {
     pub settings: PreferenceSettings,
     /// まだ分析していない、承認・却下済みの提案の件数。
     pub unanalyzed: i64,
+    pub status: AnalysisStatus,
 }
 
 #[derive(Debug, Serialize)]
@@ -163,10 +193,86 @@ impl Store {
         Ok(PreferenceSettings {
             auto_update: self.bool_setting(KEY_AUTO_UPDATE)?,
             include_direct_edits: self.bool_setting(KEY_INCLUDE_DIRECT)?,
+            auto_analyze: self.bool_setting(KEY_AUTO_ANALYZE)?,
         })
     }
 
-    pub fn update_preference_settings(&mut self, auto_update: Option<bool>, include_direct_edits: Option<bool>) -> Result<()> {
+    pub fn analysis_status(&self, project_id: &str) -> Result<AnalysisStatus> {
+        let raw: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM settings WHERE key = ?1", [format!("{STATUS_PREFIX}{project_id}")], |r| r.get(0))
+            .optional()?;
+        let mut status: AnalysisStatus = raw.and_then(|r| serde_json::from_str(&r).ok()).unwrap_or_default();
+        let running = ANALYZING.lock().unwrap_or_else(|e| e.into_inner()).as_deref() == Some(project_id);
+        status.state = if running {
+            "running".into()
+        } else if status.last_error_at.is_some() && status.last_error_at > status.last_success_at {
+            "error".into()
+        } else {
+            "idle".into()
+        };
+        Ok(status)
+    }
+
+    fn save_analysis_status(&self, project_id: &str, trigger: &str, error: Option<&str>) -> Result<()> {
+        let mut status = self.analysis_status(project_id)?;
+        let now: String = self.conn.query_row(&format!("SELECT {NOW}"), [], |r| r.get(0))?;
+        status.last_trigger = Some(trigger.to_string());
+        match error {
+            None => status.last_success_at = Some(now),
+            Some(e) => {
+                status.last_error_at = Some(now);
+                status.last_error = Some(e.chars().take(300).collect());
+            }
+        }
+        status.state = String::new();
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![format!("{STATUS_PREFIX}{project_id}"), serde_json::to_string(&status)?],
+        )?;
+        Ok(())
+    }
+
+    /// 自動分析の条件を満たすか（件数・最後の操作からの経過・前回からの間隔）。
+    pub fn auto_analysis_due(&self, project_id: &str) -> Result<bool> {
+        if self.unanalyzed_count(project_id)? < AUTO_MIN_DECISIONS {
+            return Ok(false);
+        }
+        let idle: bool = self.conn.query_row(
+            &format!(
+                "SELECT COALESCE((julianday({NOW}) - julianday(MAX(decided_at))) * 86400 >= ?2, 1) FROM proposals
+                 WHERE project_id = ?1 AND status IN ('approved', 'rejected') AND analyzed_at IS NULL"
+            ),
+            params![project_id, AUTO_IDLE_SECONDS],
+            |r| r.get(0),
+        )?;
+        if !idle {
+            return Ok(false);
+        }
+        let status = self.analysis_status(project_id)?;
+        let last = [status.last_success_at.clone(), status.last_error_at.clone()].into_iter().flatten().max();
+        if let Some(last) = last {
+            let elapsed: f64 = self.conn.query_row(
+                &format!("SELECT (julianday({NOW}) - julianday(?1)) * 86400"),
+                [last],
+                |r| r.get(0),
+            )?;
+            if elapsed < AUTO_MIN_INTERVAL_SECONDS as f64 {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    pub fn update_preference_settings(
+        &mut self,
+        auto_update: Option<bool>,
+        include_direct_edits: Option<bool>,
+        auto_analyze: Option<bool>,
+    ) -> Result<()> {
+        if let Some(v) = auto_analyze {
+            self.set_bool_setting(KEY_AUTO_ANALYZE, v)?;
+        }
         if let Some(v) = auto_update {
             self.set_bool_setting(KEY_AUTO_UPDATE, v)?;
         }
@@ -404,6 +510,7 @@ impl Store {
             suggestions: self.list_suggestions(project_id)?,
             settings: self.preference_settings()?,
             unanalyzed: self.unanalyzed_count(project_id)?,
+            status: self.analysis_status(project_id)?,
         })
     }
 
@@ -478,7 +585,9 @@ fn describe(value: &Option<Value>) -> String {
         None => "（なし）".to_string(),
         Some(v) => {
             let text = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("");
-            if v.get("kind").is_some() {
+            if v.get("title").is_some() && v.get("body").is_some() {
+                format!("[場面「{}」の概要] {}", text("title"), text("body"))
+            } else if v.get("kind").is_some() {
                 let speaker = text("speaker");
                 let head = if speaker.is_empty() { text("kind").to_string() } else { format!("{}・{speaker}", text("kind")) };
                 format!("[{head}] {}", text("body"))
@@ -667,6 +776,73 @@ pub async fn analyze(
     env_api_key: Option<&str>,
     project_id: &str,
 ) -> Result<AnalysisResult> {
+    analyze_with_trigger(store, provider, env_api_key, project_id, "manual").await
+}
+
+/// 分析を実行し、結果（成功・失敗）を状況として記録する。同時に実行できるのは 1 件だけ。
+pub async fn analyze_with_trigger(
+    store: &Mutex<Store>,
+    provider: &dyn LlmProvider,
+    env_api_key: Option<&str>,
+    project_id: &str,
+    trigger: &str,
+) -> Result<AnalysisResult> {
+    {
+        let mut running = ANALYZING.lock().unwrap_or_else(|e| e.into_inner());
+        if running.is_some() {
+            return Err(AppError::Invalid("別の分析を実行中です。終わってからもう一度試してください".into()));
+        }
+        *running = Some(project_id.to_string());
+    }
+    let result = analyze_inner(store, provider, env_api_key, project_id).await;
+    *ANALYZING.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    let s = lock(store);
+    // 「分析できる操作がない」は失敗として残さない。
+    let error = match &result {
+        Err(AppError::Invalid(_)) => return result,
+        Err(e) => Some(e.to_string()),
+        Ok(_) => None,
+    };
+    s.save_analysis_status(project_id, trigger, error.as_deref())?;
+    drop(s);
+    match result {
+        Ok(mut r) => {
+            r.profile = lock(store).profile(project_id)?;
+            Ok(r)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// 自動分析: 設定が有効なら、条件を満たすプロジェクトを分析する。分析したプロジェクトの ID を返す。
+pub async fn run_auto_analysis(store: &Mutex<Store>, provider: &dyn LlmProvider, env_api_key: Option<&str>) -> Vec<String> {
+    let due: Vec<String> = {
+        let s = lock(store);
+        if !s.preference_settings().map(|p| p.auto_analyze).unwrap_or(false) || s.ensure_llm_allowed().is_err() {
+            return Vec::new();
+        }
+        s.list_projects()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| s.auto_analysis_due(&p.id).unwrap_or(false))
+            .map(|p| p.id)
+            .collect()
+    };
+    let mut done = Vec::new();
+    for project_id in due {
+        // 失敗は状況として記録済み。以前のルールは失われない。
+        let _ = analyze_with_trigger(store, provider, env_api_key, &project_id, "auto").await;
+        done.push(project_id);
+    }
+    done
+}
+
+async fn analyze_inner(
+    store: &Mutex<Store>,
+    provider: &dyn LlmProvider,
+    env_api_key: Option<&str>,
+    project_id: &str,
+) -> Result<AnalysisResult> {
     let (decisions, rules, global_rules, model, api_key) = {
         let s = lock(store);
         s.get_project(project_id)?;
@@ -763,6 +939,96 @@ pub async fn analyze(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct ScriptedLlm(std::sync::Mutex<Vec<String>>);
+
+    impl LlmProvider for ScriptedLlm {
+        fn name(&self) -> &'static str {
+            "mock"
+        }
+        fn generate<'a>(&'a self, _m: &'a str, _k: &'a str, _r: &'a LlmRequest) -> crate::llm::LlmFuture<'a> {
+            let next = self.0.lock().unwrap().pop();
+            Box::pin(async move {
+                next.map(|text| crate::llm::LlmResponse { text, input_tokens: 1, output_tokens: 1 })
+                    .ok_or_else(|| crate::llm::LlmError("台本切れ".into()))
+            })
+        }
+    }
+
+    /// 承認・却下済みの提案を n 件作る（決定日時は `ago_seconds` 秒前）。
+    fn decided(store: &Store, project_id: &str, n: usize, ago_seconds: i64) {
+        let chat = new_id();
+        store.conn.execute(
+            &format!("INSERT INTO chats (id, project_id, title, created_at, updated_at) VALUES (?1, ?2, 'c', {NOW}, {NOW})"),
+            params![chat, project_id],
+        ).unwrap();
+        let msg = new_id();
+        store.conn.execute(
+            &format!("INSERT INTO messages (id, chat_id, seq, role, content, created_at) VALUES (?1, ?2, 1, 'assistant', 'x', {NOW})"),
+            params![msg, chat],
+        ).unwrap();
+        for i in 0..n {
+            store.conn.execute(
+                &format!(
+                    "INSERT INTO proposals (id, message_id, project_id, ordinal, op, after, status, decided_at, created_at)
+                     VALUES (?1, ?2, ?3, ?4, 'update_element', '{{\"kind\":\"Narration\",\"speaker\":\"\",\"body\":\"x\"}}', 'approved',
+                             strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?5), {NOW})"
+                ),
+                params![new_id(), msg, project_id, i as i64, format!("-{ago_seconds} seconds")],
+            ).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn auto_analysis_runs_only_when_enabled_and_due() {
+        let mut store = Store::open_in_memory().unwrap();
+        let p = store.create_project("自動", "", &[]).unwrap();
+        store.update_llm_settings(Some("key"), None, None, None).unwrap();
+        let answer = serde_json::json!({ "summary": "s", "changes": [] }).to_string();
+        let llm = ScriptedLlm(std::sync::Mutex::new(vec![answer.clone(), answer.clone()]));
+        decided(&store, &p.id, 5, 3600);
+        let store = Mutex::new(store);
+
+        // 無効なら何もしない。
+        assert!(run_auto_analysis(&store, &llm, None).await.is_empty());
+        lock(&store).update_preference_settings(None, None, Some(true)).unwrap();
+        assert!(lock(&store).preference_settings().unwrap().auto_analyze);
+
+        // 件数・経過時間を満たすと実行し、状況を記録する。
+        assert_eq!(run_auto_analysis(&store, &llm, None).await, vec![p.id.clone()]);
+        let status = lock(&store).analysis_status(&p.id).unwrap();
+        assert_eq!((status.state.as_str(), status.last_trigger.as_deref()), ("idle", Some("auto")));
+        assert!(status.last_success_at.is_some());
+        assert_eq!(lock(&store).unanalyzed_count(&p.id).unwrap(), 0);
+
+        // 直後は、件数を満たしても前回からの間隔が足りないので実行しない。
+        decided(&lock(&store), &p.id, 5, 3600);
+        assert!(!lock(&store).auto_analysis_due(&p.id).unwrap());
+        assert!(run_auto_analysis(&store, &llm, None).await.is_empty());
+
+        // 操作が続いている（最後の操作から時間が経っていない）間は実行しない。
+        let q = lock(&store).create_project("編集中", "", &[]).unwrap();
+        decided(&lock(&store), &q.id, 6, 30);
+        assert!(!lock(&store).auto_analysis_due(&q.id).unwrap());
+        // 件数が足りない場合も実行しない。
+        let r = lock(&store).create_project("少ない", "", &[]).unwrap();
+        decided(&lock(&store), &r.id, 2, 3600);
+        assert!(!lock(&store).auto_analysis_due(&r.id).unwrap());
+
+        // 失敗は状況として記録し、以前のルールは残る。
+        let t = lock(&store).create_project("失敗", "", &[]).unwrap();
+        let rule = lock(&store).create_rule(Some(&t.id), "地の文は短く", "length").unwrap();
+        decided(&lock(&store), &t.id, 5, 3600);
+        let empty = ScriptedLlm(std::sync::Mutex::new(vec![]));
+        assert_eq!(run_auto_analysis(&store, &empty, None).await, vec![t.id.clone()]);
+        let status = lock(&store).analysis_status(&t.id).unwrap();
+        assert_eq!(status.state, "error");
+        assert_eq!(status.last_error.as_deref(), Some("台本切れ"));
+        assert_eq!(lock(&store).list_rules(Some(&t.id)).unwrap()[0].id, rule.id);
+        // 利用停止中は自動分析しない。
+        lock(&store).update_llm_settings(None, None, Some(1), None).unwrap();
+        assert!(run_auto_analysis(&store, &llm, None).await.is_empty());
+    }
 
     fn rule(id: &str, text: &str, evidence: usize) -> Rule {
         Rule {

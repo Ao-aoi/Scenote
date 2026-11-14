@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// DB スキーマおよび JSON エクスポート形式のバージョン。
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 pub const KIND_DIALOGUE: &str = "Dialogue";
 pub const KIND_NARRATION: &str = "Narration";
@@ -66,6 +66,8 @@ pub struct Scene {
     pub id: String,
     pub chapter_id: String,
     pub title: String,
+    /// 場面の概要（プロット）。場面で起きることを短く書いたもの。
+    pub summary: String,
     pub position: i64,
     /// 場面とその要素に対する変更ごとに増える。競合検出に使う。
     pub revision: i64,

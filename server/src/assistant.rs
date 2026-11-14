@@ -157,13 +157,17 @@ const SYSTEM_PROMPT: &str = r#"あなたはゲームシナリオの共同執筆�
     {"op": "insert_element", "after": "e2", "kind": "Narration", "speaker": "", "body": "追加する本文", "reason": "追加理由"},
     {"op": "delete_element", "target": "e5", "reason": "削除理由"},
     {"op": "update_file", "target": "f1", "content": "変更後のファイル全文", "reason": "変更理由"},
-    {"op": "create_file", "name": "新しいファイル名", "content": "ファイル全文", "reason": "作成理由"}
+    {"op": "create_file", "name": "新しいファイル名", "content": "ファイル全文", "reason": "作成理由"},
+    {"op": "update_summary", "target": "s3", "summary": "変更後の場面の概要（プロット）", "reason": "変更理由"},
+    {"op": "insert_scene", "after": "s3", "title": "新しい場面の題名", "summary": "その場面の概要", "reason": "追加理由"}
   ]
 }
 
 - update_element の kind と speaker は、変えない場合は省略できます。body には変更後の本文全体を書きます。
 - insert_element の after には、直前に置く要素の参照名、または "start"（場面の先頭）・"end"（場面の末尾）を指定します。連続して追加する場合は、同じ after を指定して並べたい順に書きます。
 - 要素への提案は「編集中の場面」が示されている場合だけ出せます。
+- update_summary・insert_scene は、構成に示した場面の参照名（s1 など）で指定します。場面の概要（プロット）は、その場面で起きることを 1〜3 文で書きます。
+- insert_scene は、after に指定した場面と同じ章の、その直後に場面を追加します。
 - 提案がない場合は "proposals": [] とします。"#;
 
 fn kind_label(kind: &str) -> &str {
@@ -194,16 +198,21 @@ pub fn build_context(
     if !tree.project.description.trim().is_empty() {
         out.push_str(&format!("説明: {}\n", tree.project.description.trim()));
     }
-    out.push_str("\n# 構成\n");
+    out.push_str("\n# 構成（場面の参照名つき）\n");
+    let mut scene_no = 0;
     for node in &tree.chapters {
         out.push_str(&format!("- {}\n", node.chapter.title));
         for s in &node.scenes {
+            scene_no += 1;
             let mark = if scene.is_some_and(|open| open.scene.id == s.id) {
                 "（編集中）"
             } else {
                 ""
             };
-            out.push_str(&format!("  - {}{mark}\n", s.title));
+            out.push_str(&format!("  - [s{scene_no}] {}{mark}\n", s.title));
+            if !s.summary.is_empty() {
+                out.push_str(&format!("    概要: {}\n", s.summary.replace('\n', " ")));
+            }
         }
     }
     match scene {
@@ -296,6 +305,7 @@ fn validate_one(
     raw: &Value,
     scene: Option<&SceneDetail>,
     files: &[ReferenceFile],
+    scenes: &[Scene],
 ) -> std::result::Result<Option<NewProposal>, String> {
     let text = |key: &str| raw.get(key).and_then(Value::as_str);
     let op = text("op").ok_or("op がありません")?;
@@ -420,6 +430,45 @@ fn validate_one(
                 reason,
             }))
         }
+        OP_UPDATE_SUMMARY | OP_INSERT_SCENE => {
+            let key = if op == OP_UPDATE_SUMMARY { "target" } else { "after" };
+            let index = index_of(text(key), 's', scenes.len())
+                .ok_or_else(|| format!("存在しない場面を指しています（{}）", text(key).unwrap_or("指定なし")))?;
+            let target = &scenes[index];
+            let summary = text("summary").map(str::trim).ok_or("summary がありません")?;
+            if summary.chars().count() > 2000 {
+                return Err("場面の概要が長すぎます".to_string());
+            }
+            if op == OP_UPDATE_SUMMARY {
+                if summary == target.summary {
+                    return Ok(None);
+                }
+                return Ok(Some(NewProposal {
+                    op: OP_UPDATE_SUMMARY,
+                    target_id: Some(target.id.clone()),
+                    scene_id: Some(target.id.clone()),
+                    anchor: None,
+                    base_revision: None,
+                    before: Some(json!({ "title": target.title, "body": target.summary })),
+                    after: Some(json!({ "title": target.title, "body": summary })),
+                    reason,
+                }));
+            }
+            let title = text("title").map(str::trim).filter(|t| !t.is_empty()).ok_or("title がありません")?;
+            if title.chars().count() > 200 || title.chars().any(char::is_control) {
+                return Err("場面の題名が不正です".to_string());
+            }
+            Ok(Some(NewProposal {
+                op: OP_INSERT_SCENE,
+                target_id: None,
+                scene_id: Some(target.id.clone()),
+                anchor: Some(target.id.clone()),
+                base_revision: None,
+                before: None,
+                after: Some(json!({ "title": title, "body": summary })),
+                reason,
+            }))
+        }
         other => Err(format!("未対応の操作です（{other}）")),
     }
 }
@@ -431,6 +480,7 @@ pub fn interpret_response(
     text: &str,
     scene: Option<&SceneDetail>,
     files: &[ReferenceFile],
+    scenes: &[Scene],
 ) -> std::result::Result<(String, Vec<NewProposal>, Vec<String>), String> {
     let value = extract_json(text).ok_or("AI の応答を解釈できませんでした（JSON ではありません）")?;
     let reply = value
@@ -454,7 +504,7 @@ pub fn interpret_response(
             warnings.push(format!("提案が多すぎるため、{MAX_PROPOSALS} 件を超えた分を除外しました"));
             break;
         }
-        match validate_one(item, scene, files) {
+        match validate_one(item, scene, files, scenes) {
             Ok(Some(p)) => proposals.push(p),
             Ok(None) => warnings.push(format!("提案 {} は現在の内容と同じため除外しました", i + 1)),
             Err(why) => warnings.push(format!("提案 {} を除外しました: {why}", i + 1)),
@@ -577,10 +627,11 @@ pub async fn send_message(
         .map_err(|e| AppError::Llm(e.0))?;
 
     // 4. 使用量を記録し、応答を検証して保存する。
+    let all_scenes: Vec<Scene> = tree.chapters.iter().flat_map(|c| c.scenes.iter().cloned()).collect();
     let mut s = lock(store);
     s.record_usage(provider.name(), &model, "chat", response.input_tokens, response.output_tokens)?;
     let (reply, proposals, mut response_warnings) =
-        interpret_response(&response.text, scene.as_ref(), &files).map_err(AppError::Llm)?;
+        interpret_response(&response.text, scene.as_ref(), &files, &all_scenes).map_err(AppError::Llm)?;
     warnings.append(&mut response_warnings);
     let referenced: Vec<Value> = selected
         .iter()
