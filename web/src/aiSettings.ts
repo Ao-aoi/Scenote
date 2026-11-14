@@ -15,7 +15,11 @@ interface FormValue {
 /** 設定ダイアログを開く。保存した場合は true。 */
 /** `local` が false（iPad などの端末）の場合、API キーの欄は表示しない（キーを LAN に流さないため）。 */
 export async function openAiSettings(local = true): Promise<boolean> {
-  const [settings, usage] = await Promise.all([api.getLlmSettings(), api.getUsage()]);
+  const [settings, usage, prefs] = await Promise.all([
+    api.getLlmSettings(),
+    api.getUsage(),
+    api.updatePreferenceSettings({}),
+  ]);
   let models: LlmModel[] = [];
   const value = await openDialog<FormValue>((close) => {
     const key = h("input", {
@@ -84,6 +88,18 @@ export async function openAiSettings(local = true): Promise<boolean> {
       value: String(settings.warn_percent),
       required: true,
     });
+    // 執筆嗜好の分析（#10）。設定はその場で保存する。
+    const autoAnalyze = h("input", { type: "checkbox", checked: prefs.auto_analyze });
+    const autoApply = h("input", { type: "checkbox", checked: prefs.auto_update });
+    autoAnalyze.addEventListener("change", () => void api.updatePreferenceSettings({ auto_analyze: autoAnalyze.checked }).catch(() => undefined));
+    autoApply.addEventListener("change", () => void api.updatePreferenceSettings({ auto_update: autoApply.checked }).catch(() => undefined));
+    const prefSection = h(
+      "div", {},
+      h("h3", {}, "執筆嗜好の分析"),
+      h("label", { class: "check" }, autoAnalyze, "分析を自動で実行する"),
+      h("p", { class: "hint" }, "未分析の操作が 5 件以上たまり、最後の操作から 10 分経ったときに実行します（間隔は 1 時間以上）。API の利用上限に達している間は実行しません。実行状況は「執筆の嗜好」画面で確認できます。"),
+      h("label", { class: "check" }, autoApply, "分析結果を承認なしでプロファイルに反映する"),
+    );
     const usageRows = usage.by_model.map((m) =>
       h(
         "tr", {},
@@ -126,6 +142,7 @@ export async function openAiSettings(local = true): Promise<boolean> {
       h("div", { class: "form-row" }, refreshModels, modelStatus),
       h("label", { class: "form-row" }, h("span", {}, "月あたりのトークン上限（0 で無制限。到達すると AI の利用を自動停止）"), limit),
       h("label", { class: "form-row" }, h("span", {}, "警告を出す使用率（%）"), warn),
+      prefSection,
       h("h3", {}, `今月の使用量（${usage.month}、UTC）`),
       h("p", {}, `合計 ${usage.total_tokens.toLocaleString()} / ${limitText} トークン・${usage.requests.toLocaleString()} リクエスト`),
       usageRows.length

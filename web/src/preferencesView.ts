@@ -5,6 +5,7 @@
 
 import { api } from "./api";
 import { askConfirm, h, openDialog, toast } from "./dom";
+import { formatTime } from "./historyView";
 import { errorMessage } from "./sceneEditor";
 import {
   CATEGORY_LABELS,
@@ -19,6 +20,19 @@ const SOURCE_LABELS: Record<string, string> = {
   ai: "分析",
   copied: "複製",
 };
+
+/** 分析の実行状況（最終実行日時・失敗）を表示する。 */
+export function statusLine(profile: PreferenceProfile): HTMLElement {
+  const s = profile.status;
+  const parts: (string | HTMLElement)[] = [];
+  if (s.state === "running") parts.push("分析を実行中です…");
+  if (s.last_success_at) parts.push(`最終分析: ${formatTime(s.last_success_at)}${s.last_trigger === "auto" ? "（自動）" : ""}`);
+  if (s.state === "error" && s.last_error_at) {
+    parts.push(h("span", { class: "error-text" }, `前回の分析に失敗しました（${formatTime(s.last_error_at)}）: ${s.last_error ?? ""}。以前のルールはそのまま残っています。`));
+  }
+  if (!parts.length) parts.push("まだ分析していません。");
+  return h("p", { class: "muted pref-meta analysis-status" }, ...parts.flatMap((p, i) => (i ? [" ・ ", p] : [p])));
+}
 
 function confidenceLabel(c: number): string {
   const level = c >= 0.7 ? "強い" : c >= 0.45 ? "中" : "弱い";
@@ -134,11 +148,18 @@ export class PreferencesView {
     direct.addEventListener("change", () => void this.guard(async () => {
       await api.updatePreferenceSettings({ include_direct_edits: direct.checked });
     }));
+    const autoAnalyze = h("input", { type: "checkbox", checked: profile.settings.auto_analyze });
+    autoAnalyze.addEventListener("change", () => void this.guard(async () => {
+      await api.updatePreferenceSettings({ auto_analyze: autoAnalyze.checked });
+      toast(autoAnalyze.checked ? "条件を満たしたときに分析を自動で実行します" : "分析は手動で実行します");
+      await this.render();
+    }));
+    const running = this.analyzing || profile.status.state === "running";
     const button = h("button", {
       type: "button",
       class: "primary",
-      disabled: this.analyzing || profile.unanalyzed === 0,
-    }, this.analyzing ? "分析中…" : "分析する");
+      disabled: running || profile.unanalyzed === 0,
+    }, running ? "分析中…" : "分析する");
     button.addEventListener("click", () => void this.analyze());
     const summary = this.lastSummary;
     return h(
@@ -149,6 +170,8 @@ export class PreferencesView {
         button,
         h("span", { class: "muted" }, profile.unanalyzed ? `未分析の操作 ${profile.unanalyzed} 件` : "新しい操作はありません"),
       ),
+      statusLine(profile),
+      h("label", { class: "check" }, autoAnalyze, "分析を自動で実行する（未分析の操作が 5 件以上たまり、最後の操作から 10 分経ったとき。間隔は 1 時間以上）"),
       h("label", { class: "check" }, auto, "分析結果を自動でプロファイルに反映する（オフの場合は更新案を確認して承認）"),
       h("label", { class: "check" }, direct, "自分で直接書いた文章も分析に含める"),
       summary

@@ -13,6 +13,8 @@ export interface Scene {
   id: string;
   chapter_id: string;
   title: string;
+  /** 場面の概要（プロット）。 */
+  summary: string;
   position: number;
   revision: number;
 }
@@ -107,10 +109,18 @@ export interface DiffSegment {
   text: string;
 }
 
-export type ProposalOp = "update_element" | "insert_element" | "delete_element" | "update_file" | "create_file";
+export type ProposalOp =
+  | "update_element"
+  | "insert_element"
+  | "delete_element"
+  | "update_file"
+  | "create_file"
+  | "update_summary"
+  | "insert_scene";
 export type ProposalStatus = "pending" | "approved" | "rejected" | "stale";
 
 export interface ProposalContent {
+  title?: string;
   kind?: string;
   speaker?: string;
   body?: string;
@@ -255,8 +265,25 @@ export interface PreferenceProfile {
   global_rules: PreferenceRule[];
   project_rules: PreferenceRule[];
   suggestions: PreferenceSuggestion[];
-  settings: { auto_update: boolean; include_direct_edits: boolean };
+  settings: PreferenceSettings;
   unanalyzed: number;
+  status: AnalysisStatus;
+}
+
+export interface PreferenceSettings {
+  /** 分析結果を承認なしで適用する。 */
+  auto_update: boolean;
+  include_direct_edits: boolean;
+  /** 分析そのものを自動で実行する。 */
+  auto_analyze: boolean;
+}
+
+export interface AnalysisStatus {
+  state: "idle" | "running" | "error";
+  last_success_at: string | null;
+  last_error_at: string | null;
+  last_error: string | null;
+  last_trigger: "manual" | "auto" | null;
 }
 
 export interface AnalysisResult {
@@ -340,3 +367,31 @@ export interface Structure {
 }
 
 export const VAR_TYPE_LABELS: Record<string, string> = { number: "数値", bool: "真偽値", text: "文字列" };
+
+// ---- キャラクター・段階的な生成 ----
+
+export interface Character {
+  id: string;
+  project_id: string;
+  name: string;
+  aliases: string[];
+}
+
+export interface CharacterFact {
+  id: string;
+  character_id: string;
+  category: string;
+  text: string;
+  source: "user" | "confirmed" | "inferred";
+  status: "active" | "proposed" | "rejected";
+}
+
+export interface CharacterDraft {
+  name: string;
+  facts: { category: string; text: string }[];
+}
+
+export interface ChapterDraft {
+  title: string;
+  scenes: { title: string; summary: string }[];
+}

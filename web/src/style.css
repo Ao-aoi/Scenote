@@ -451,6 +451,27 @@ button.link { border: none; background: none; color: var(--accent); padding: 0; 
 .badge-warning { background: var(--k-direction); color: #fff; }
 .badge-info { background: var(--hover); color: var(--muted); }
 
+/* ---- 作品づくり（AI） ---- */
+.gen-step { margin-top: 20px; display: flex; flex-direction: column; gap: 8px; }
+.gen-step h2 { margin: 0; font-size: 1rem; }
+.gen-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.gen-actions > .field { flex: 1 1 220px; width: auto; }
+.gen-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--muted); }
+.gen-count { width: 4.5em; }
+.gen-cards { display: flex; flex-direction: column; gap: 10px; }
+.gen-card { border: 1px solid var(--border); border-radius: 8px; background: var(--surface); padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+.gen-card-head { display: flex; gap: 6px; align-items: center; }
+.gen-card-head .field { flex: 1; }
+.gen-name, .gen-chapter { font-weight: 700; }
+.gen-fact { display: grid; grid-template-columns: 7em 1fr auto; gap: 6px; align-items: start; }
+.gen-scene { border-left: 3px solid var(--border); padding-left: 8px; display: flex; flex-direction: column; gap: 4px; }
+.gen-world { font-family: ui-monospace, "Cascadia Mono", Consolas, "Yu Gothic UI", monospace; font-size: 0.9rem; }
+.gen-saved { display: flex; flex-direction: column; gap: 4px; }
+.gen-saved-item { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; background: var(--surface); }
+.gen-saved-item summary { cursor: pointer; font-weight: 600; }
+.gen-saved-item ul { margin: 6px 0; padding-left: 18px; font-size: 0.9rem; }
+.analysis-status { margin: 4px 0; }
+
 /* ---- モデル選択 ---- */
 .picker { position: relative; }
 .picker-button { display: flex; align-items: center; gap: 8px; text-align: left; }
@@ -494,3 +515,79 @@ button.link { border: none; background: none; color: var(--accent); padding: 0; 
   .chat { position: absolute; inset: 0 0 0 auto; z-index: 9; width: min(460px, 100vw); box-shadow: -4px 0 16px rgba(0, 0, 0, 0.2); }
   .status { font-size: 0.75rem; }
 }
+
+/* ---- かんたんモード（#15 #11 #8） ---- */
+.simple {
+  display: flex;
+  flex-direction: column;
+  height: var(--simple-height, 100dvh);
+  overflow: hidden;
+  background: var(--bg);
+}
+.simple-head, .simple-subhead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px max(10px, env(safe-area-inset-left));
+  background: var(--surface);
+}
+.simple-head { padding-top: max(6px, env(safe-area-inset-top)); }
+.simple-subhead { border-bottom: 1px solid var(--border); padding-top: 0; }
+.simple-project { flex: 1; min-width: 0; min-height: 40px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); padding: 0 10px; font-weight: 700; }
+.simple-context { flex: 1; min-width: 0; text-align: left; border: none; background: var(--hover); border-radius: 18px; min-height: 34px; display: flex; align-items: center; }
+.simple-context-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.simple-status { font-size: 0.75rem; color: var(--muted); white-space: nowrap; }
+.simple.offline .simple-status::after { content: "・同期切断中"; color: var(--danger); }
+.simple-tabs { display: flex; margin: 8px 10px; }
+.simple-tabs .seg { flex: 1; min-height: 38px; }
+.simple-pane { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.simple-pane[hidden] { display: none; }
+
+/* 会話: 入力欄を画面下部に固定する（#11） */
+.simple-chat { display: flex; flex-direction: column; overflow: hidden; background: var(--surface); }
+.simple-chat .chat-head { border-bottom: 1px solid var(--border); }
+.simple-chat .chat-messages { flex: 1; min-height: 0; }
+.simple-chat .chat-compose { position: sticky; bottom: 0; background: var(--surface); }
+.simple-chat .chat-input { min-height: 44px; max-height: 160px; resize: none; }
+.simple-chat .chat-actions .ref-summary { display: none; }
+.simple-quick { display: flex; gap: 6px; overflow-x: auto; padding: 6px 8px 0; border-top: 1px solid var(--border); scrollbar-width: none; }
+.simple-quick .chip { flex: none; --kind: var(--accent); min-height: 34px; }
+.simple-chat .proposal-actions { flex-wrap: wrap; }
+.simple-chat .proposal-actions button { min-height: 44px; flex: 1 1 auto; white-space: nowrap; }
+.simple-chat .msg { font-size: 0.95rem; }
+
+/* プロット: 一度に 1 枚だけ開いて編集する（#15） */
+.simple-plot { padding: 0 10px 24px; }
+.simple-plot-head .field { min-height: 40px; }
+.plot-list { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.plot-card { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); padding: 4px 10px 10px; }
+.plot-card.current { border-color: var(--accent); }
+.plot-card.open { box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08); }
+.plot-card-head { display: flex; align-items: center; gap: 8px; width: 100%; border: none; background: transparent; padding: 6px 0; text-align: left; min-height: 40px; }
+.plot-no { flex: none; width: 24px; height: 24px; border-radius: 12px; background: var(--hover); display: inline-flex; align-items: center; justify-content: center; font-size: 0.8rem; color: var(--muted); }
+.plot-title { flex: 1; font-weight: 700; overflow-wrap: anywhere; }
+.plot-current { font-size: 0.75rem; color: var(--accent); }
+.plot-summary { margin: 0 0 0 32px; font-size: 0.9rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.plot-input { line-height: 1.7; }
+.plot-note { margin: 4px 0; font-size: 0.8rem; min-height: 1em; }
+.plot-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.plot-actions button { min-height: 38px; }
+.plot-add { width: 100%; min-height: 44px; }
+
+/* 本文: 補助的な操作は折りたたむ（#8） */
+.simple-body { padding: 8px 10px 40vh; }
+.simple-body .scene-header .segmented { display: none; }
+.simple-body .scene-title { font-size: 1.1rem; }
+.simple-body .block { padding: 4px 8px 6px; }
+.simple-body .block-tools { display: none; }
+.simple-body .block:focus-within .block-tools { display: flex; }
+.simple-body .kind-select { font-size: 0.8rem; }
+.simple-body .adder { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; }
+.simple-body .adder .chip { flex: none; }
+.simple-body .adder-label { display: none; }
+
+/* 場面の選択ダイアログ */
+.picker-chapter h3 { margin: 12px 0 4px; font-size: 0.9rem; color: var(--muted); }
+.picker-scene { display: flex; flex-direction: column; align-items: flex-start; width: 100%; text-align: left; border: none; background: transparent; padding: 8px; border-radius: 6px; min-height: 44px; }
+.picker-scene .muted { font-size: 0.8rem; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+.picker-scene.active { background: var(--hover); }

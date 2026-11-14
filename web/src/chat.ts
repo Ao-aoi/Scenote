@@ -30,6 +30,8 @@ const OP_LABELS: Record<string, string> = {
   delete_element: "要素の削除",
   update_file: "参照ファイルの変更",
   create_file: "参照ファイルの作成",
+  update_summary: "プロット（場面の概要）の変更",
+  insert_scene: "場面の追加",
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -52,6 +54,7 @@ export interface ChatPanelOptions {
 
 function describeContent(c: ProposalContent | null): string {
   if (!c) return "";
+  if (c.title !== undefined) return `場面「${c.title}」`;
   if (c.kind === undefined) return c.name ?? "";
   return c.speaker ? `${kindLabel(c.kind)}（${c.speaker}）` : kindLabel(c.kind);
 }
@@ -325,6 +328,18 @@ export class ChatPanel {
     this.renderCompose();
   }
 
+  /** 決まった依頼文を入力欄に入れて送る（かんたんモードのワンタップ依頼）。 */
+  async sendText(text: string): Promise<void> {
+    if (this.sending) return;
+    this.input.value = text;
+    await this.send();
+  }
+
+  /** 送信中か。 */
+  get isSending(): boolean {
+    return this.sending;
+  }
+
   private async send(): Promise<void> {
     const content = this.input.value.trim();
     if (!content || this.sending || !this.projectId) return;
@@ -515,7 +530,30 @@ export class ChatPanel {
   private askEdit(p: Proposal): Promise<ProposalContent | null> {
     const after = p.after ?? {};
     const isFile = p.op === "update_file" || p.op === "create_file";
+    const isPlot = p.op === "update_summary" || p.op === "insert_scene";
     return openDialog<ProposalContent>((close) => {
+      if (isPlot) {
+        const title = h("input", { type: "text", class: "field", maxLength: 200, value: after.title ?? "" });
+        const summary = h("textarea", { class: "field edit-body", rows: 6, value: after.body ?? "" });
+        setTimeout(() => summary.focus());
+        return h(
+          "form",
+          {
+            onsubmit: (e: Event) => {
+              e.preventDefault();
+              close({ title: title.value.trim() || after.title, body: summary.value });
+            },
+          },
+          h("h2", {}, "提案を修正して採用"),
+          p.op === "insert_scene" ? h("label", { class: "form-row" }, h("span", {}, "場面の題名"), title) : null,
+          h("label", { class: "form-row" }, h("span", {}, "場面の概要（プロット）"), summary),
+          h(
+            "div", { class: "dialog-actions" },
+            h("button", { type: "button", onclick: () => close(null) }, "キャンセル"),
+            h("button", { type: "submit", class: "primary" }, "この内容で反映"),
+          ),
+        );
+      }
       const body = h("textarea", { class: "field edit-body", rows: 8, value: (isFile ? after.content : after.body) ?? "" });
       const speaker = h("input", { type: "text", class: "field", maxLength: 100, value: after.speaker ?? "" });
       const name = h("input", { type: "text", class: "field", maxLength: 200, value: after.name ?? "" });

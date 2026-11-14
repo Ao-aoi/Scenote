@@ -1,7 +1,12 @@
 // HTTP API クライアント。画面側はここを通してのみサーバーと通信する。
 
 import type {
+  Character,
+  CharacterDraft,
+  CharacterFact,
+  ChapterDraft,
   AnalysisResult,
+  PreferenceSettings,
   Structure,
   Variable,
   Device,
@@ -123,6 +128,24 @@ export const api = {
     request<Scene>("POST", `/chapters/${chapterId}/scenes`, { title }),
   getScene: (id: string) => request<SceneDetail>("GET", `/scenes/${id}`),
   renameScene: (id: string, title: string) => request<Scene>("PATCH", `/scenes/${id}`, { title }),
+  updateSceneSummary: (id: string, baseRevision: number, summary: string) =>
+    request<Scene>("PATCH", `/scenes/${id}`, { summary, base_revision: baseRevision }),
+  createSceneWithSummary: (chapterId: string, title: string, summary: string, after?: string) =>
+    request<Scene>("POST", `/chapters/${chapterId}/scenes`, { title, summary, after }),
+  appendOutline: (projectId: string, chapters: { title: string; scenes: { title: string; summary: string }[] }[]) =>
+    request<Scene[]>("POST", `/projects/${projectId}/outline`, { chapters }),
+  listCharacters: (projectId: string) => request<Character[]>("GET", `/projects/${projectId}/characters`),
+  createCharacter: (projectId: string, name: string) => request<Character>("POST", `/projects/${projectId}/characters`, { name }),
+  deleteCharacter: (id: string) => request<void>("DELETE", `/characters/${id}`),
+  listFacts: (characterId: string) => request<CharacterFact[]>("GET", `/characters/${characterId}/facts`),
+  createFact: (characterId: string, category: string, text: string) =>
+    request<CharacterFact>("POST", `/characters/${characterId}/facts`, { category, text, source: "user" }),
+  generateCharacters: (projectId: string, body: { premise: string; instructions: string; count: number }) =>
+    request<{ drafts: CharacterDraft[]; warnings: string[] }>("POST", `/projects/${projectId}/generate/characters`, body),
+  generateWorld: (projectId: string, body: { premise: string; instructions: string; characters: CharacterDraft[] }) =>
+    request<{ drafts: { title: string; content: string }; warnings: string[] }>("POST", `/projects/${projectId}/generate/world`, body),
+  generateStory: (projectId: string, body: { premise: string; instructions: string }) =>
+    request<{ drafts: ChapterDraft[]; warnings: string[] }>("POST", `/projects/${projectId}/generate/story`, body),
   deleteScene: (id: string) => request<void>("DELETE", `/scenes/${id}`),
   reorderScenes: (chapterId: string, ids: string[]) =>
     request<void>("PUT", `/chapters/${chapterId}/scenes/order`, { ids }),
@@ -199,8 +222,8 @@ export const api = {
     request<{ copied: number }>("POST", `/preferences/rules/${id}/copy`, projectId ? { project_id: projectId } : {}),
   approveSuggestion: (id: string) => request<PreferenceSuggestion>("POST", `/preferences/suggestions/${id}/approve`, {}),
   rejectSuggestion: (id: string) => request<PreferenceSuggestion>("POST", `/preferences/suggestions/${id}/reject`, {}),
-  updatePreferenceSettings: (patch: { auto_update?: boolean; include_direct_edits?: boolean }) =>
-    request<{ auto_update: boolean; include_direct_edits: boolean }>("PUT", "/settings/preferences", patch),
+  updatePreferenceSettings: (patch: Partial<PreferenceSettings>) =>
+    request<PreferenceSettings>("PUT", "/settings/preferences", patch),
 
   listVariables: (projectId: string) => request<Variable[]>("GET", `/projects/${projectId}/variables`),
   createVariable: (projectId: string, v: { name: string; var_type: string; initial: string; description: string }) =>

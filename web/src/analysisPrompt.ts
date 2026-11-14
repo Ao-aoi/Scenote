@@ -34,6 +34,8 @@ export async function maybePromptAnalysis(projectId: string, analyze: () => void
   checking = true;
   try {
     const profile = await api.getPreferences(projectId);
+    // 自動分析が有効なら、案内は出さない（サーバーが条件を見て実行する）。
+    if (profile.settings.auto_analyze) return;
     const stored = localStorage.getItem(key(projectId));
     const dismissedAt = stored === null ? null : Number(stored);
     const hasRules = profile.project_rules.some((r) => r.source === "ai") || profile.suggestions.length > 0;

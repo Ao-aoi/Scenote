@@ -13,6 +13,8 @@ import { icon, iconButton } from "./icons";
 import { HistoryView } from "./historyView";
 import { PreferencesView } from "./preferencesView";
 import { StructureView } from "./structureView";
+import { GenerationView } from "./generationView";
+import { shouldUseSimple, startSimple, switchMode } from "./simpleMode";
 import { SceneEditor, type SaveState, type SceneEditorOptions } from "./sceneEditor";
 import { TEMPLATE_LABELS, type Meta, type Project, type ProjectTree, type ReferenceFile } from "./types";
 
@@ -34,7 +36,7 @@ let projects: Project[] = [];
 let tree: ProjectTree | null = null;
 let files: ReferenceFile[] = [];
 /** 本文領域に表示しているもの。 */
-type View = "scene" | "file" | "history" | "prefs" | "structure";
+type View = "scene" | "file" | "history" | "prefs" | "structure" | "generate";
 let view: View = "scene";
 const saveStates: Record<"scene" | "file", { state: SaveState; message?: string }> = {
   scene: { state: "saved" },
@@ -49,7 +51,8 @@ const fileHost = h("div", { class: "editor-host", hidden: true });
 const historyHost = h("div", { class: "editor-host", hidden: true });
 const prefsHost = h("div", { class: "editor-host", hidden: true });
 const structureHost = h("div", { class: "editor-host structure-host", hidden: true });
-const main = h("main", { class: "main" }, sceneHost, fileHost, historyHost, prefsHost, structureHost);
+const generateHost = h("div", { class: "editor-host", hidden: true });
+const main = h("main", { class: "main" }, sceneHost, fileHost, historyHost, prefsHost, structureHost, generateHost);
 const historyButton = iconButton("history", "履歴", "履歴とスナップショット");
 const chatHost = h("aside", { class: "chat", "aria-label": "AI チャット" });
 const chatToggle = iconButton("ai", "AI", "AI チャットを開閉");
@@ -114,7 +117,9 @@ const chat = new ChatPanel(chatHost, {
   currentSceneId: () => editor.sceneId,
   flushEditors,
   onApplied: async (proposal) => {
-    if (proposal.op === "update_file" || proposal.op === "create_file") {
+    if (proposal.op === "update_summary" || proposal.op === "insert_scene") {
+      await refreshTree();
+    } else if (proposal.op === "update_file" || proposal.op === "create_file") {
       await refreshFiles();
       if (proposal.target_id && proposal.target_id === fileEditor.fileId) await fileEditor.syncFromServer();
     } else if (proposal.scene_id && proposal.scene_id === editor.sceneId) {
@@ -147,6 +152,7 @@ function setView(next: View): void {
   historyHost.hidden = next !== "history";
   prefsHost.hidden = next !== "prefs";
   structureHost.hidden = next !== "structure";
+  generateHost.hidden = next !== "generate";
   main.classList.toggle("wide", next === "structure");
   historyButton.setAttribute("aria-pressed", String(next === "history"));
   showSaveState();
@@ -165,12 +171,18 @@ const historyView = new HistoryView(historyHost, {
   },
 });
 const preferencesView = new PreferencesView(prefsHost);
+const generationView = new GenerationView(generateHost, {
+  onChanged: async () => {
+    await refreshTree();
+    await refreshFiles();
+  },
+});
 const structureView = new StructureView(structureHost, {
   openScene: (sceneId) => void run(() => selectScene(sceneId)),
 });
 
 /** 場面・参照ファイル以外の画面（履歴・嗜好）を開く。編集中の内容は先に保存する。 */
-async function openPanel(next: "history" | "prefs" | "structure"): Promise<void> {
+async function openPanel(next: "history" | "prefs" | "structure" | "generate"): Promise<void> {
   if (!tree) return;
   if (!(await flushEditors())) {
     toast("編集中の内容を保存できていません。競合やエラーを解消してからやり直してください", "error");
@@ -180,6 +192,7 @@ async function openPanel(next: "history" | "prefs" | "structure"): Promise<void>
   setView(next);
   if (next === "history") await historyView.open(tree.project.id);
   else if (next === "structure") await structureView.open(tree.project.id);
+  else if (next === "generate") await generationView.open(tree.project.id);
   else await preferencesView.open(tree.project.id, projects);
   renderNav();
   shell.classList.remove("nav-open");
@@ -470,9 +483,18 @@ function renderNav(): void {
   });
   const prefsActive = view === "prefs";
   const structureActive = view === "structure";
+  const generateActive = view === "generate";
   const prefsSection = h(
     "section", { class: "chapter files" },
     h("ul", {}, h(
+      "li", { class: generateActive ? "scene-item active" : "scene-item" },
+      h("button", {
+        type: "button",
+        class: "scene-link",
+        "aria-current": generateActive ? "true" : undefined,
+        onclick: () => void run(() => openPanel("generate")),
+      }, "作品づくり（AI）"),
+    ), h(
       "li", { class: structureActive ? "scene-item active" : "scene-item" },
       h("button", {
         type: "button",
@@ -548,6 +570,7 @@ settingsButton.addEventListener("click", () =>
   openMenu(settingsButton, [
     { label: "プロジェクト設定…", action: () => void run(editProject) },
     { label: "AI 設定・使用量…", action: () => void run(showAiSettings) },
+    { label: "かんたんモードに切り替え", action: () => switchMode("simple") },
     auth.local
       ? { label: "端末の接続…", action: () => void run(openDeviceManager) }
       : { label: `この端末（${auth.deviceName ?? "端末"}）の接続を解除…`, action: () => void run(disconnectThisDevice) },
@@ -653,6 +676,11 @@ async function start(): Promise<void> {
       return;
     }
     auth = { local: status.local, deviceName: status.device_name };
+    // スマートフォン（または、かんたんモードを選んだ端末）では、かんたんモードの画面で始める。
+    if (shouldUseSimple()) {
+      await startSimple(appRoot, { meta: await api.meta(), local: status.local, deviceName: status.device_name });
+      return;
+    }
   } catch (e) {
     appRoot.replaceChildren(h("div", { class: "empty pair-screen" }, h("p", { class: "error-text" }, e instanceof Error ? e.message : "サーバーに接続できません")));
     return;
