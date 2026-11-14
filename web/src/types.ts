@@ -36,6 +36,8 @@ export interface ScenarioElement {
   kind: string;
   body: string;
   speaker: string;
+  /** 独立したキャラクターへの参照（未設定なら null）。speaker と併存する。 */
+  character_id: string | null;
   position: number;
   origin: string;
   revision: number;

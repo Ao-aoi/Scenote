@@ -11,6 +11,7 @@ use crate::diff::{diff_text, Segment};
 use crate::error::{AppError, Result};
 use crate::model::*;
 use crate::store::{new_id, Store, NOW};
+use crate::characters::{CharacterFact, CharacterRelation};
 use crate::store_ai::ReferenceFile;
 
 pub const TARGET_ELEMENT: &str = "element";
@@ -87,6 +88,21 @@ pub struct SnapshotData {
     pub project: SnapshotProject,
     pub chapters: Vec<SnapshotChapter>,
     pub files: Vec<SnapshotFile>,
+    /// キャラクター（情報つき）。v6 より前のスナップショットにはないため、なければ空として読む。
+    #[serde(default)]
+    pub characters: Vec<SnapshotCharacter>,
+    #[serde(default)]
+    pub character_relations: Vec<CharacterRelation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SnapshotCharacter {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub facts: Vec<CharacterFact>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -119,6 +135,8 @@ pub struct SnapshotElement {
     #[serde(default)]
     pub attrs: Value,
     pub origin: String,
+    #[serde(default)]
+    pub character_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -379,6 +397,7 @@ impl Store {
                             body: e.body,
                             attrs: e.attrs,
                             origin: e.origin,
+                            character_id: e.character_id,
                         })
                         .collect(),
                 });
@@ -399,6 +418,11 @@ impl Store {
                 pinned: f.pinned,
             })
             .collect();
+        let mut characters = Vec::new();
+        for c in self.list_characters(project_id)? {
+            characters.push(SnapshotCharacter { facts: self.list_facts(&c.id)?, id: c.id, name: c.name, aliases: c.aliases });
+        }
+        let character_relations = self.list_relations(project_id)?;
         Ok(SnapshotData {
             format: "scenote-snapshot".into(),
             schema_version: SCHEMA_VERSION,
@@ -409,6 +433,8 @@ impl Store {
             },
             chapters,
             files,
+            characters,
+            character_relations,
         })
     }
 
@@ -584,6 +610,44 @@ impl Store {
         };
         tx.execute("DELETE FROM chapters WHERE project_id = ?1", [&project_id])?;
         tx.execute("DELETE FROM reference_files WHERE project_id = ?1", [&project_id])?;
+        tx.execute("DELETE FROM characters WHERE project_id = ?1", [&project_id])?;
+        // キャラクターを先に戻す（要素の character_id が参照するため）。ID が他で使われていれば振り直す。
+        let mut character_ids: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        for c in &data.characters {
+            let new_cid = if taken("characters", &c.id)? { new_id() } else { c.id.clone() };
+            tx.execute(
+                &format!(
+                    "INSERT INTO characters (id, project_id, name, aliases, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, {NOW}, {NOW})"
+                ),
+                params![new_cid, project_id, c.name, serde_json::to_string(&c.aliases)?],
+            )?;
+            for f in &c.facts {
+                let fid = if taken("character_facts", &f.id)? { new_id() } else { f.id.clone() };
+                tx.execute(
+                    &format!(
+                        "INSERT INTO character_facts (id, character_id, category, text, source, confidence, evidence, status, created_at, updated_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, {NOW}, {NOW})"
+                    ),
+                    params![fid, new_cid, f.category, f.text, f.source, f.confidence, serde_json::to_string(&f.evidence)?, f.status],
+                )?;
+            }
+            character_ids.insert(c.id.clone(), new_cid);
+        }
+        for r in &data.character_relations {
+            let (Some(from), Some(to)) = (character_ids.get(&r.from_character_id), character_ids.get(&r.to_character_id)) else {
+                continue;
+            };
+            let rid = if taken("character_relations", &r.id)? { new_id() } else { r.id.clone() };
+            tx.execute(
+                &format!(
+                    "INSERT INTO character_relations (id, project_id, from_character_id, to_character_id, kind, text, source,
+                                                      confidence, evidence, status, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, {NOW}, {NOW})"
+                ),
+                params![rid, project_id, from, to, r.kind, r.text, r.source, r.confidence, serde_json::to_string(&r.evidence)?, r.status],
+            )?;
+        }
         for (ci, chapter) in data.chapters.iter().enumerate() {
             let chapter_id = if taken("chapters", &chapter.id)? { new_id() } else { chapter.id.clone() };
             tx.execute(
@@ -608,10 +672,21 @@ impl Store {
                     tx.execute(
                         &format!(
                             "INSERT INTO elements (id, scene_id, kind, body, speaker, attrs, position, origin, revision,
-                                                   created_at, updated_at)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, {NOW}, {NOW})"
+                                                   character_id, created_at, updated_at)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, {NOW}, {NOW})"
                         ),
-                        params![element_id, scene_id, e.kind, e.body, e.speaker, attrs, ei as i64, e.origin, revision],
+                        params![
+                            element_id,
+                            scene_id,
+                            e.kind,
+                            e.body,
+                            e.speaker,
+                            attrs,
+                            ei as i64,
+                            e.origin,
+                            revision,
+                            e.character_id.as_ref().and_then(|c| character_ids.get(c))
+                        ],
                     )?;
                 }
             }

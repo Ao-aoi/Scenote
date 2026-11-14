@@ -10,6 +10,7 @@
 //! - `api`      : HTTP API
 
 pub mod api;
+pub mod characters;
 pub mod assistant;
 pub mod auth;
 pub mod error;

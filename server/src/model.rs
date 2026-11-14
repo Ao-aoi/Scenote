@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// DB スキーマおよび JSON エクスポート形式のバージョン。
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 pub const KIND_DIALOGUE: &str = "Dialogue";
 pub const KIND_NARRATION: &str = "Narration";
@@ -81,6 +81,8 @@ pub struct Element {
     pub body: String,
     /// 関連キャラクター（台詞の話者など）。キャラクター管理の導入までは名前の文字列で持つ。
     pub speaker: String,
+    /// 独立したキャラクターへの参照（`speaker` と併存し、未設定なら None）。
+    pub character_id: Option<String>,
     /// 種類ごとの追加情報（条件・遷移先など）を入れる拡張用 JSON オブジェクト。
     pub attrs: Value,
     pub position: i64,

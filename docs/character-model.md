@@ -5,7 +5,9 @@
 本書は方針を定めるものであり、キャラクター管理の機能そのものは実装していない。
 キャラクター管理・性格分析・関係性マップ・エピソード提案を後から追加するときに、既存のシナリオデータと AI 機能を作り直さずに済むよう、データの境界と移行の手順を決めておく。
 
-## 1. 現状
+> **実装状況**：段階 1（第 3 節）は実装済み（[Ao-aoi/Scenote#12](https://github.com/Ao-aoi/Scenote/issues/12)）。API は `/api/projects/{id}/characters`、`/api/characters/{id}`、`/api/characters/{id}/facts`、`/api/character-facts/{id}`、`/api/projects/{id}/character-relations`、`/api/character-relations/{id}`。要素の作成・更新では `character_id` を指定できる（更新で `null` を送ると外す）。
+
+## 1. 現状（段階 1 の実装前）
 
 キャラクターは、次の場所に**名前の文字列**としてだけ存在する。
 
