@@ -68,7 +68,7 @@ cargo run --release --manifest-path server/Cargo.toml
    $env:SCENOTE_LAN = "1"; cargo run --release --manifest-path server/Cargo.toml
    ```
 
-   起動時に「同じ LAN の端末からの接続先: http://192.168.x.x:8787」と表示される。初回は Windows のファイアウォールの確認が出るので、**プライベート ネットワーク**での通信を許可する。
+   起動時に接続先 URL と QR コードが PowerShell に表示される。iPad のカメラで QR コードを読み取ると Safari で開ける。初回は Windows のファイアウォールの確認が出るので、**プライベート ネットワーク**での通信を許可する。
 2. PC のブラウザで <http://localhost:8787> を開き、「設定」→「端末の接続…」→「ペアリングコードを発行」を押す。
 3. iPad の Safari で表示されたアドレスを開き、8 桁のコードと端末名を入力する（コードは 10 分間・一度だけ有効）。
 4. 以後、iPad と PC の変更は互いの画面に自動で反映される。同じ箇所を同時に編集した場合は、上書きせずにどちらの内容を残すか選ぶ画面が出る。
