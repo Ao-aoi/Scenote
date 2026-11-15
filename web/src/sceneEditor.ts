@@ -3,6 +3,7 @@
 import { api, ApiError } from "./api";
 import { BRANCH_KINDS, buildBranchEditor, type BranchAttrs, type SceneOption } from "./branchEditor";
 import { askConfirm, h, toast } from "./dom";
+import { icon, toolButton, type IconName } from "./icons";
 import { kindLabel, type ScenarioElement, type SceneDetail } from "./types";
 
 export type SaveState = "saved" | "dirty" | "saving" | "error" | "conflict";
@@ -340,7 +341,7 @@ export class SceneEditor {
         h(
           "button",
           { type: "button", class: `chip kind-${kind}`, onclick: () => void this.addElement(kind, scene.elements.length) },
-          `＋ ${kindLabel(kind)}`,
+          icon("plus"), kindLabel(kind),
         ),
       ),
     );
@@ -487,8 +488,12 @@ export class SceneEditor {
       if (saver.dirty && !saver.conflict) void saver.flush();
     });
 
-    const tool = (label: string, title: string, onclick: () => void, disabled = false) =>
-      h("button", { type: "button", class: "tool", title, "aria-label": title, disabled, onclick }, label);
+    const tool = (name: IconName, title: string, onclick: () => void, disabled = false) => {
+      const b = toolButton(name, title);
+      b.disabled = disabled;
+      b.onclick = onclick;
+      return b;
+    };
     const last = index === scene.elements.length - 1;
     block.append(
       h(
@@ -497,10 +502,10 @@ export class SceneEditor {
         speaker,
         h(
           "div", { class: "block-tools" },
-          tool("↑", "上へ移動", () => void this.moveElement(element.id, -1), index === 0),
-          tool("↓", "下へ移動", () => void this.moveElement(element.id, 1), last),
-          tool("＋", "下に追加 (Ctrl+Enter)", () => void this.addElement(kindSelect.value, index + 1)),
-          tool("✕", "削除", () => void this.deleteElement(element.id, textarea.value)),
+          tool("up", "上へ移動", () => void this.moveElement(element.id, -1), index === 0),
+          tool("down", "下へ移動", () => void this.moveElement(element.id, 1), last),
+          tool("plus", "下に追加 (Ctrl+Enter)", () => void this.addElement(kindSelect.value, index + 1)),
+          tool("close", "削除", () => void this.deleteElement(element.id, textarea.value)),
         ),
       ),
       textarea,

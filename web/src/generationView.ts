@@ -6,6 +6,7 @@
 
 import { api } from "./api";
 import { askConfirm, h, toast } from "./dom";
+import { icon } from "./icons";
 import { errorMessage } from "./sceneEditor";
 import type { ChapterDraft, Character, CharacterDraft, CharacterFact } from "./types";
 
@@ -138,11 +139,11 @@ export class GenerationView {
         const text = h("textarea", { class: "field", rows: 2, value: f.text, "aria-label": "内容" });
         cat.addEventListener("input", () => { f.category = cat.value; this.persist(); });
         text.addEventListener("input", () => { f.text = text.value; this.persist(); });
-        const del = h("button", { type: "button", class: "tool", title: "この項目を削除", "aria-label": "この項目を削除" }, "✕");
+        const del = h("button", { type: "button", class: "tool", title: "この項目を削除", "aria-label": "この項目を削除" }, icon("close"));
         del.addEventListener("click", () => { c.facts.splice(fi, 1); this.persist(); this.render(); });
         return h("div", { class: "gen-fact" }, cat, text, del);
       });
-      const addFact = h("button", { type: "button", class: "add" }, "＋ 項目");
+      const addFact = h("button", { type: "button", class: "add" }, icon("plus"), "項目");
       addFact.addEventListener("click", () => { c.facts.push({ category: "", text: "" }); this.persist(); this.render(); });
       return h("div", { class: "gen-card", "data-index": ci }, h("div", { class: "gen-card-head" }, check, name), ...facts, addFact);
     });
@@ -244,14 +245,14 @@ export class GenerationView {
     const chapters = s.story.map((c, ci) => {
       const title = h("input", { type: "text", class: "field gen-chapter", value: c.title, maxLength: 200, "aria-label": "章の題名" });
       title.addEventListener("input", () => { c.title = title.value; this.persist(); });
-      const del = h("button", { type: "button", class: "tool", title: "この章を除く", "aria-label": "この章を除く" }, "✕");
+      const del = h("button", { type: "button", class: "tool", title: "この章を除く", "aria-label": "この章を除く" }, icon("close"));
       del.addEventListener("click", () => { s.story.splice(ci, 1); this.persist(); this.render(); });
       const scenes = c.scenes.map((sc, si) => {
         const st = h("input", { type: "text", class: "field", value: sc.title, maxLength: 200, "aria-label": "場面の題名" });
         const sum = h("textarea", { class: "field", rows: 2, value: sc.summary, "aria-label": "場面の概要" });
         st.addEventListener("input", () => { sc.title = st.value; this.persist(); });
         sum.addEventListener("input", () => { sc.summary = sum.value; this.persist(); });
-        const rm = h("button", { type: "button", class: "tool", title: "この場面を除く", "aria-label": "この場面を除く" }, "✕");
+        const rm = h("button", { type: "button", class: "tool", title: "この場面を除く", "aria-label": "この場面を除く" }, icon("close"));
         rm.addEventListener("click", () => { c.scenes.splice(si, 1); this.persist(); this.render(); });
         return h("div", { class: "gen-scene" }, h("div", { class: "gen-card-head" }, st, rm), sum);
       });

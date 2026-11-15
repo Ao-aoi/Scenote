@@ -588,3 +588,9 @@ button.link { border: none; background: none; color: var(--accent); padding: 0; 
 .picker-scene { display: flex; flex-direction: column; align-items: flex-start; width: 100%; text-align: left; border: none; background: transparent; padding: 8px; border-radius: 6px; min-height: 44px; }
 .picker-scene .muted { font-size: 0.8rem; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
 .picker-scene.active { background: var(--hover); }
+
+/* 文字とアイコンを並べるボタン・小さな操作ボタンのアイコン（#9） */
+button:is(.add, .chip, .primary, .tab, [class=""]):has(> .ico), button:not([class]):has(> .ico) { display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
+button:is(.add, .chip, .primary, [class=""]) > .ico, button:not([class]) > .ico { width: 16px; height: 16px; }
+button.tool > .ico { width: 16px; height: 16px; vertical-align: middle; }
+button.simple-send > .ico, button.simple-to-bottom > .ico { width: 22px; height: 22px; vertical-align: middle; }

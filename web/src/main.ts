@@ -364,9 +364,10 @@ function renderNav(): void {
     h("button", {
       type: "button",
       class: "icon more",
+      title: `${label}の操作`,
       "aria-label": `${label}の操作`,
       onclick: (e: Event) => openMenu(e.currentTarget as HTMLElement, items()),
-    }, "⋯");
+    }, icon("more"));
 
   const sections = current.chapters.map((chapter, ci) => {
     const sceneIds = chapter.scenes.map((s) => s.id);
@@ -465,7 +466,7 @@ function renderNav(): void {
           await refreshTree();
           await selectScene(scene.id);
         }),
-      }, "＋ 場面"),
+      }, icon("plus"), "場面"),
     );
   });
 
@@ -526,7 +527,7 @@ function renderNav(): void {
         await refreshFiles();
         await selectFile(file.id);
       }),
-    }, "＋ 参照ファイル"),
+    }, icon("plus"), "参照ファイル"),
   );
 
   nav.replaceChildren(
@@ -540,7 +541,7 @@ function renderNav(): void {
         await api.createChapter(current.project.id, title);
         await refreshTree();
       }),
-    }, "＋ 章"),
+    }, icon("plus"), "章"),
     fileSection,
     prefsSection,
   );

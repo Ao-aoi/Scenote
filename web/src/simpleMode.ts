@@ -79,9 +79,9 @@ export async function startSimple(appRoot: HTMLElement, deps: Deps): Promise<voi
   const bodyHost = h("div", { class: "simple-body" });
   const pendingHost = h("div", { class: "simple-pending", "aria-live": "polite" });
   const thinking = h("p", { class: "simple-thinking", hidden: true }, "AI が考えています…");
-  const toBottom = h("button", { type: "button", class: "simple-to-bottom", title: "いちばん下へ", "aria-label": "いちばん下へ", hidden: true }, "↓");
+  const toBottom = h("button", { type: "button", class: "simple-to-bottom", title: "いちばん下へ", "aria-label": "いちばん下へ", hidden: true }, icon("down"));
   const input = h("textarea", { class: "simple-input", rows: 1, placeholder: "本文や、AI への依頼を入力", "aria-label": "本文や AI への依頼" });
-  const send = h("button", { type: "button", class: "simple-send primary", title: "送信", "aria-label": "送信" }, "↑");
+  const send = h("button", { type: "button", class: "simple-send primary", title: "送信", "aria-label": "送信" }, icon("send"));
   scroller.append(bodyHost, pendingHost, thinking);
   shell.append(
     h("header", { class: "simple-head" }, sceneButton, status, menu),
@@ -346,12 +346,12 @@ export async function startSimple(appRoot: HTMLElement, deps: Deps): Promise<voi
                 onclick: () => close(s.id),
               }, h("strong", {}, s.title), s.summary ? h("span", { class: "muted" }, s.summary) : ""),
             ),
-            h("button", { type: "button", class: "add", onclick: () => close(`new:${c.id}`) }, "＋ この章に場面を追加"),
+            h("button", { type: "button", class: "add", onclick: () => close(`new:${c.id}`) }, icon("plus"), "この章に場面を追加"),
           ),
         ),
         h(
           "div", { class: "dialog-actions" },
-          h("button", { type: "button", onclick: () => close("new-chapter") }, "＋ 章を追加"),
+          h("button", { type: "button", onclick: () => close("new-chapter") }, icon("plus"), "章を追加"),
           h("button", { type: "button", onclick: () => close(null) }, "閉じる"),
         ),
       ),
@@ -421,7 +421,7 @@ export async function startSimple(appRoot: HTMLElement, deps: Deps): Promise<voi
         ),
         h(
           "div", { class: "dialog-actions" },
-          h("button", { type: "button", onclick: () => close("__new__") }, "＋ 新規"),
+          h("button", { type: "button", onclick: () => close("__new__") }, icon("plus"), "新規"),
           h("button", { type: "button", onclick: () => close(null) }, "閉じる"),
         ),
       ),

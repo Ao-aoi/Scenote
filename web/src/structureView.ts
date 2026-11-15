@@ -4,6 +4,7 @@
 
 import { api } from "./api";
 import { askConfirm, h, openDialog, toast } from "./dom";
+import { icon } from "./icons";
 import { errorMessage } from "./sceneEditor";
 import { VAR_TYPE_LABELS, type GraphEdge, type GraphNode, type Structure, type Variable } from "./types";
 
@@ -280,7 +281,7 @@ export class StructureView {
 
   private renderVariables(body: HTMLElement, d: Structure): void {
     const usage = new Map(d.variable_usage.map((u) => [u.name, u]));
-    const add = h("button", { type: "button", class: "primary" }, "＋ 変数を追加");
+    const add = h("button", { type: "button", class: "primary" }, icon("plus"), "変数を追加");
     add.addEventListener("click", () => void this.guard(() => this.editVariable(null)));
     const rows = d.variables.map((v) => {
       const u = usage.get(v.name);

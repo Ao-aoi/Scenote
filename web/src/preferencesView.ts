@@ -5,6 +5,7 @@
 
 import { api } from "./api";
 import { askConfirm, h, openDialog, toast } from "./dom";
+import { icon } from "./icons";
 import { formatTime } from "./historyView";
 import { errorMessage } from "./sceneEditor";
 import {
@@ -247,7 +248,7 @@ export class PreferencesView {
   }
 
   private renderRules(title: string, rules: PreferenceRule[], scope: string | null): HTMLElement {
-    const add = h("button", { type: "button", class: "add" }, "＋ ルールを追加");
+    const add = h("button", { type: "button", class: "add" }, icon("plus"), "ルールを追加");
     add.addEventListener("click", () => void this.guard(async () => {
       const value = await askRule("ルールを追加", { text: "", category: "style" }, false);
       if (!value) return;

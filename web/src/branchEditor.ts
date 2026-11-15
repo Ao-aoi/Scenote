@@ -3,6 +3,7 @@
 // 式の誤りは保存を妨げない。構文・未定義の変数などは「構造」画面のチェックで知らせる。
 
 import { h } from "./dom";
+import { icon } from "./icons";
 
 export interface SceneOption {
   id: string;
@@ -82,7 +83,7 @@ export function buildBranchEditor(
       read: (): ChoiceOption => ({ text: text.value, target: target.value || null, condition: condition.value, effects: effects.value }),
       node: h("div", { class: "branch-option" }),
     };
-    const remove = h("button", { type: "button", class: "tool", title: "この選択肢を削除", "aria-label": "この選択肢を削除" }, "✕");
+    const remove = h("button", { type: "button", class: "tool", title: "この選択肢を削除", "aria-label": "この選択肢を削除" }, icon("close"));
     remove.addEventListener("click", () => {
       rows.splice(rows.indexOf(row), 1);
       row.node.remove();
@@ -101,7 +102,7 @@ export function buildBranchEditor(
   for (const o of initial) {
     addRow({ text: str(o.text), target: typeof o.target === "string" ? o.target : null, condition: str(o.condition), effects: str(o.effects) }, false);
   }
-  const add = h("button", { type: "button", class: "add" }, "＋ 選択肢の項目");
+  const add = h("button", { type: "button", class: "add" }, icon("plus"), "選択肢の項目");
   add.addEventListener("click", () => {
     addRow({}, true);
     rows[rows.length - 1].node.querySelector("input")?.focus();

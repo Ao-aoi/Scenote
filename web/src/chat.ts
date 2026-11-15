@@ -2,6 +2,7 @@
 
 import { api, ApiError } from "./api";
 import { askConfirm, askText, h, openDialog, openMenu, toast } from "./dom";
+import { icon } from "./icons";
 import { errorMessage } from "./sceneEditor";
 import {
   kindLabel,
@@ -82,7 +83,7 @@ export class ChatPanel {
   private usage: UsageStatus | null = null;
 
   private readonly select = h("select", { class: "chat-select", "aria-label": "チャット" });
-  private readonly menuButton = h("button", { type: "button", class: "icon", "aria-label": "チャットの操作" }, "⋯");
+  private readonly menuButton = h("button", { type: "button", class: "icon", title: "チャットの操作", "aria-label": "チャットの操作" }, icon("more"));
   private readonly banner = h("div", { class: "chat-banner" });
   private readonly list = h("div", { class: "chat-messages", "aria-live": "polite" });
   private readonly input = h("textarea", {

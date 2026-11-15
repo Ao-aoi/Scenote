@@ -8,6 +8,12 @@ const PATHS = {
   settings: ["M4 7h9", "M17 7h3", "M4 17h3", "M11 17h9", "M15 4.8a2.2 2.2 0 1 0 0 4.4a2.2 2.2 0 0 0 0-4.4z", "M9 14.8a2.2 2.2 0 1 0 0 4.4a2.2 2.2 0 0 0 0-4.4z"],
   history: ["M4.5 12a7.5 7.5 0 1 0 2.4-5.5", "M4 4.5v3.2h3.2", "M12 8v4.2l2.8 1.8"],
   export: ["M12 4v10", "M8 10.5l4 4l4-4", "M5 15.5V19h14v-3.5"],
+  plus: ["M12 5v14", "M5 12h14"],
+  close: ["M6.5 6.5l11 11", "M17.5 6.5l-11 11"],
+  up: ["M12 19V5", "M6.5 10.5L12 5l5.5 5.5"],
+  down: ["M12 5v14", "M6.5 13.5L12 19l5.5-5.5"],
+  send: ["M12 19V6", "M6 11.5l6-6l6 6"],
+  more: ["M6 12h.01", "M12 12h.01", "M18 12h.01"],
   ai: ["M5 6.5h14v9.5h-7.5L8 19.5V16H5z", "M9 10h6", "M9 12.8h4"],
 } as const;
 
@@ -25,6 +31,11 @@ export function icon(name: IconName): SVGSVGElement {
     svg.append(path);
   }
   return svg;
+}
+
+/** 小さな操作ボタン（文字なし）。意味は title と aria-label で伝える。 */
+export function toolButton(name: IconName, label: string, cls = "tool"): HTMLButtonElement {
+  return h("button", { type: "button", class: cls, title: label, "aria-label": label }, icon(name));
 }
 
 /**
