@@ -14,6 +14,7 @@ import { HistoryView } from "./historyView";
 import { PreferencesView } from "./preferencesView";
 import { StructureView } from "./structureView";
 import { GenerationView } from "./generationView";
+import { ReadView } from "./readView";
 import { shouldUseSimple, startSimple, switchMode } from "./simpleMode";
 import { SceneEditor, type SaveState, type SceneEditorOptions } from "./sceneEditor";
 import { TEMPLATE_LABELS, type Meta, type Project, type ProjectTree, type ReferenceFile } from "./types";
@@ -36,7 +37,7 @@ let projects: Project[] = [];
 let tree: ProjectTree | null = null;
 let files: ReferenceFile[] = [];
 /** 本文領域に表示しているもの。 */
-type View = "scene" | "file" | "history" | "prefs" | "structure" | "generate";
+type View = "scene" | "file" | "history" | "prefs" | "structure" | "generate" | "read";
 let view: View = "scene";
 const saveStates: Record<"scene" | "file", { state: SaveState; message?: string }> = {
   scene: { state: "saved" },
@@ -52,7 +53,8 @@ const historyHost = h("div", { class: "editor-host", hidden: true });
 const prefsHost = h("div", { class: "editor-host", hidden: true });
 const structureHost = h("div", { class: "editor-host structure-host", hidden: true });
 const generateHost = h("div", { class: "editor-host", hidden: true });
-const main = h("main", { class: "main" }, sceneHost, fileHost, historyHost, prefsHost, structureHost, generateHost);
+const readHost = h("div", { class: "editor-host read-host", hidden: true });
+const main = h("main", { class: "main" }, sceneHost, fileHost, historyHost, prefsHost, structureHost, generateHost, readHost);
 const historyButton = iconButton("history", "履歴", "履歴とスナップショット");
 const chatHost = h("aside", { class: "chat", "aria-label": "AI チャット" });
 const chatToggle = iconButton("ai", "AI", "AI チャットを開閉");
@@ -153,6 +155,8 @@ function setView(next: View): void {
   prefsHost.hidden = next !== "prefs";
   structureHost.hidden = next !== "structure";
   generateHost.hidden = next !== "generate";
+  readHost.hidden = next !== "read";
+  if (next !== "read") readView.close();
   main.classList.toggle("wide", next === "structure");
   historyButton.setAttribute("aria-pressed", String(next === "history"));
   showSaveState();
@@ -177,12 +181,18 @@ const generationView = new GenerationView(generateHost, {
     await refreshFiles();
   },
 });
+const readView = new ReadView(readHost, main, {
+  editScene: (sceneId) => void run(() => selectScene(sceneId)),
+  onCurrentChange: () => {
+    if (view === "read") renderNav();
+  },
+});
 const structureView = new StructureView(structureHost, {
   openScene: (sceneId) => void run(() => selectScene(sceneId)),
 });
 
 /** 場面・参照ファイル以外の画面（履歴・嗜好）を開く。編集中の内容は先に保存する。 */
-async function openPanel(next: "history" | "prefs" | "structure" | "generate"): Promise<void> {
+async function openPanel(next: "history" | "prefs" | "structure" | "generate" | "read"): Promise<void> {
   if (!tree) return;
   if (!(await flushEditors())) {
     toast("編集中の内容を保存できていません。競合やエラーを解消してからやり直してください", "error");
@@ -193,6 +203,7 @@ async function openPanel(next: "history" | "prefs" | "structure" | "generate"): 
   if (next === "history") await historyView.open(tree.project.id);
   else if (next === "structure") await structureView.open(tree.project.id);
   else if (next === "generate") await generationView.open(tree.project.id);
+  else if (next === "read") await readView.open(tree, editor.sceneId);
   else await preferencesView.open(tree.project.id, projects);
   renderNav();
   shell.classList.remove("nav-open");
@@ -440,14 +451,19 @@ function renderNav(): void {
           }),
         },
       ];
-      const active = view === "scene" && scene.id === editor.sceneId;
+      const active = view === "read" ? scene.id === readView.currentSceneId : view === "scene" && scene.id === editor.sceneId;
       return h(
         "li", { class: active ? "scene-item active" : "scene-item" },
         h("button", {
           type: "button",
           class: "scene-link",
           "aria-current": active ? "true" : undefined,
-          onclick: () => void run(() => selectScene(scene.id)),
+          onclick: () => void run(async () => {
+            if (view === "read") {
+              await readView.scrollTo(scene.id);
+              shell.classList.remove("nav-open");
+            } else await selectScene(scene.id);
+          }),
         }, scene.title),
         more(scene.title, sceneMenu),
       );
@@ -530,7 +546,17 @@ function renderNav(): void {
     }, icon("plus"), "参照ファイル"),
   );
 
+  const readActive = view === "read";
   nav.replaceChildren(
+    h("button", {
+      type: "button",
+      class: readActive ? "read-toggle primary" : "read-toggle",
+      title: "章・場面をまたいで本文を続けて表示する",
+      onclick: () => void run(async () => {
+        if (view === "read") await selectScene(readView.currentSceneId ?? editor.sceneId ?? allSceneIds()[0] ?? null);
+        else await openPanel("read");
+      }),
+    }, readActive ? "場面ごとの編集に戻る" : "通して読む"),
     ...sections,
     h("button", {
       type: "button",
@@ -641,6 +667,9 @@ async function applyRemoteChanges(scopes: Set<string>): Promise<void> {
     await historyView.open(projectId);
   }
   if (view === "prefs" && (scopes.has("prefs") || scopes.has("chat"))) await preferencesView.open(projectId, projects);
+  if (view === "read" && tree && (scopes.has("scene") || scopes.has("tree") || scopes.has("snapshots"))) {
+    await readView.refresh(tree);
+  }
   if (view === "structure" && ["structure", "scene", "tree", "snapshots"].some((x) => scopes.has(x))) {
     await structureView.open(projectId);
   }
