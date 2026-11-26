@@ -529,11 +529,11 @@ mod tests {
             let conn = Connection::open(&path).unwrap();
             conn.pragma_update(None, "foreign_keys", "ON").unwrap();
             for sql in [
-                include_str!("schema_v1.sql"),
-                include_str!("schema_v2.sql"),
-                include_str!("schema_v3.sql"),
-                include_str!("schema_v4.sql"),
-                include_str!("schema_v5.sql"),
+                scenote_core::schema::MIGRATIONS[1 - 1],
+                scenote_core::schema::MIGRATIONS[2 - 1],
+                scenote_core::schema::MIGRATIONS[3 - 1],
+                scenote_core::schema::MIGRATIONS[4 - 1],
+                scenote_core::schema::MIGRATIONS[5 - 1],
             ] {
                 conn.execute_batch(sql).unwrap();
             }

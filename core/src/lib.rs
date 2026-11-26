@@ -8,7 +8,9 @@
 //! - `validate` : 入力の検証・正規化と、Markdown 保存時の要素の対応づけ
 
 pub mod diff;
+pub mod events;
 pub mod logic;
 pub mod markdown;
 pub mod model;
+pub mod schema;
 pub mod validate;

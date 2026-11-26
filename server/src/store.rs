@@ -149,49 +149,49 @@ impl Store {
         }
         if version < 1 {
             let tx = self.conn.transaction()?;
-            tx.execute_batch(include_str!("schema_v1.sql"))?;
+            tx.execute_batch(scenote_core::schema::MIGRATIONS[1 - 1])?;
             tx.pragma_update(None, "user_version", 1)?;
             tx.commit()?;
         }
         if version < 2 {
             let tx = self.conn.transaction()?;
-            tx.execute_batch(include_str!("schema_v2.sql"))?;
+            tx.execute_batch(scenote_core::schema::MIGRATIONS[2 - 1])?;
             tx.pragma_update(None, "user_version", 2)?;
             tx.commit()?;
         }
         if version < 3 {
             let tx = self.conn.transaction()?;
-            tx.execute_batch(include_str!("schema_v3.sql"))?;
+            tx.execute_batch(scenote_core::schema::MIGRATIONS[3 - 1])?;
             tx.pragma_update(None, "user_version", 3)?;
             tx.commit()?;
         }
         if version < 4 {
             let tx = self.conn.transaction()?;
-            tx.execute_batch(include_str!("schema_v4.sql"))?;
+            tx.execute_batch(scenote_core::schema::MIGRATIONS[4 - 1])?;
             tx.pragma_update(None, "user_version", 4)?;
             tx.commit()?;
         }
         if version < 5 {
             let tx = self.conn.transaction()?;
-            tx.execute_batch(include_str!("schema_v5.sql"))?;
+            tx.execute_batch(scenote_core::schema::MIGRATIONS[5 - 1])?;
             tx.pragma_update(None, "user_version", 5)?;
             tx.commit()?;
         }
         if version < 6 {
             let tx = self.conn.transaction()?;
-            tx.execute_batch(include_str!("schema_v6.sql"))?;
+            tx.execute_batch(scenote_core::schema::MIGRATIONS[6 - 1])?;
             tx.pragma_update(None, "user_version", 6)?;
             tx.commit()?;
         }
         if version < 7 {
             let tx = self.conn.transaction()?;
-            tx.execute_batch(include_str!("schema_v7.sql"))?;
+            tx.execute_batch(scenote_core::schema::MIGRATIONS[7 - 1])?;
             tx.pragma_update(None, "user_version", 7)?;
             tx.commit()?;
         }
         if version < 8 {
             let tx = self.conn.transaction()?;
-            tx.execute_batch(include_str!("schema_v8.sql"))?;
+            tx.execute_batch(scenote_core::schema::MIGRATIONS[8 - 1])?;
             tx.pragma_update(None, "user_version", 8)?;
             tx.commit()?;
         }
