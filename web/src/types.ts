@@ -60,6 +60,10 @@ export interface Meta {
   schema_version: number;
   element_kinds: string[];
   templates: string[];
+  /** サーバーの版（Cloudflare 版のみ "cloudflare"）。 */
+  edition?: string;
+  /** 使える機能（省略時はすべて）。`edition.ts` を参照。 */
+  features?: string[];
 }
 
 export const KIND_LABELS: Record<string, string> = {

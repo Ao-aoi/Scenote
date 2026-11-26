@@ -234,7 +234,7 @@ export const api = {
   getStructure: (projectId: string) => request<Structure>("GET", `/projects/${projectId}/structure`),
 
   authStatus: () =>
-    request<{ authenticated: boolean; local: boolean; device_name: string | null; lan_enabled: boolean }>("GET", "/auth/status"),
+    request<{ authenticated: boolean; local: boolean; device_name: string | null; lan_enabled: boolean; logout_url?: string }>("GET", "/auth/status"),
   pair: (code: string, deviceName: string) =>
     request<{ device: Device }>("POST", "/auth/pair", { code, device_name: deviceName }),
   logout: () => request<void>("POST", "/auth/logout", {}),

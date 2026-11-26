@@ -63,6 +63,8 @@ html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
   .block-tools { opacity: 1; }
 }
 
+[hidden] { display: none !important; }
+
 body { background: var(--bg); color: var(--text); }
 
 button, input, select, textarea { font: inherit; color: inherit; }

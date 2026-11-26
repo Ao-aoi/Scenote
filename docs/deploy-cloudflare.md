@@ -1,68 +1,83 @@
-# Cloudflare 経由で公開する
+# Cloudflare 版のデプロイ
 
-Scenote は PC 上の Rust サーバー（axum）と SQLite で動き、Gemini の API キーも PC 側で保持する（CLAUDE.md 第11節）。
-そのため Cloudflare Pages / Workers へアプリ本体を載せることはできない（SQLite のファイル・常駐プロセス・WebSocket の状態を持てない）。
-本書では **Cloudflare Tunnel** で PC のサーバーを外部の HTTPS URL に公開する方法を示す。データとキーは PC から出ない。
+PC を使わずに iPhone・iPad から使うための版。`cloudflare/` にある。
 
-## 1. 前提
+- **Worker**（Rust、workers-rs）: `/api/` を処理する。画面（`web/dist`）は静的アセットとして配信する。
+- **Durable Object**（`ScenoteData`）: 内蔵の SQLite にすべてのデータを保存する。インスタンスは1つ。
+- **ログイン**: Cloudflare Access。Worker は Access の署名つきトークンを検証し、通らない要求を拒否する。
+- PC 版と同じ処理（データモデル・Markdown 変換・入力検証・スキーマ）は `core/` を共有する。
+
+## 第1段階で使える機能
+
+プロジェクト・章・場面・要素の編集、自動保存と競合検出、Markdown 編集、分岐の設定、
+Markdown・JSON の書き出し、端末間の変更通知。かんたんモードの入力欄は、AI を使わず
+本文の末尾へそのまま追加する（`**名前**: 台詞` の行は台詞になる）。
+
+AI（チャット・提案・作品づくり・嗜好学習）、参照ファイル、編集履歴・スナップショット、
+キャラクター・変数・構造チェックは未対応で、画面に表示しない。編集履歴はまだ記録しない。
+
+## 必要なもの
 
 - Cloudflare アカウントと、Cloudflare で管理しているドメイン（例: `example.com`）
-- PC で Scenote をビルド済み（`web/` で `npm run build`、`server/` で `cargo build --release`）
+- Workers の有料プランは不要（Durable Objects の SQLite は無料プランで使える）
+- Rust（`rustup target add wasm32-unknown-unknown`）、`cargo install worker-build`、Node.js
 
-## 2. サーバーの起動
+## 1. Cloudflare Access の設定
 
-トンネルは PC 内から `127.0.0.1` へ接続するため、`SCENOTE_LAN=1` は不要。
+1. ダッシュボードの **Zero Trust → Access → Applications → Add an application → Self-hosted**。
+2. Application domain に `scenote.example.com` を入力する。
+3. ポリシーで **Include → Emails** に自分のメールアドレスだけを指定する。
+4. 保存後、アプリケーションの **Overview** にある **Application Audience (AUD) Tag** を控える。
+5. **Settings → Custom Pages** などに表示されるチームのドメイン（`<チーム名>.cloudflareaccess.com`）を控える。
 
-```powershell
-cd server
-cargo run --release   # 127.0.0.1:8787 で待ち受け
+## 2. 設定ファイル
+
+`cloudflare/wrangler.toml` を編集する。
+
+```toml
+routes = [{ pattern = "scenote.example.com", custom_domain = true }]
+
+[vars]
+ACCESS_TEAM_DOMAIN = "<チーム名>.cloudflareaccess.com"
+ACCESS_AUD = "<AUD タグ>"
+ALLOWED_EMAILS = "you@example.com"   # 任意（Access のポリシーに加えて確認）
 ```
 
-## 3. cloudflared の設定
+`workers_dev = false` のままにする（Access で保護していない URL を作らないため）。
 
-```powershell
-winget install --id Cloudflare.cloudflared
-cloudflared tunnel login
-cloudflared tunnel create scenote
-cloudflared tunnel route dns scenote scenote.example.com
+## 3. デプロイ
+
+```sh
+cd cloudflare
+npm install
+npx wrangler login
+npm run deploy      # web/ のビルド → Worker のビルド → デプロイ
 ```
 
-`%USERPROFILE%\.cloudflared\config.yml`:
+## 4. iPhone のホーム画面に追加
 
-```yaml
-tunnel: scenote
-credentials-file: C:\Users\<ユーザー名>\.cloudflared\<トンネルID>.json
+Safari で `https://scenote.example.com` を開いて Access でログインし、共有ボタン →
+**ホーム画面に追加**。スマートフォンでは自動でかんたんモードになる。
 
-ingress:
-  - hostname: scenote.example.com
-    service: http://127.0.0.1:8787
-  - service: http_status:404
+Access のログインの有効期間（Application の **Session Duration**）を長め（例: 1か月）にすると、
+ログインし直す回数が減る。
+
+## ローカルでの確認
+
+```sh
+cd cloudflare
+echo 'SCENOTE_DEV_USER=dev@example.com' > .dev.vars   # localhost でだけ Access を省く
+npm run dev                                         # http://127.0.0.1:8787
+node tests/smoke.mjs http://127.0.0.1:8787          # API の通し確認
 ```
 
-起動（常駐させる場合は `cloudflared service install`）:
+## データのバックアップ
 
-```powershell
-cloudflared tunnel run scenote
-```
+画面の **書き出し → JSON** でプロジェクト全体を保存できる。Durable Object の SQLite は
+Cloudflare 側で保持され、30日以内の任意の時点へ戻せる（Point-in-time recovery）。
 
-注意: `originRequest.httpHostHeader` で Host を `localhost` に書き換えないこと。書き換えると外部からの接続が PC 本体として扱われ、認証が無効になる。
+## 補足: PC 版を外部から使う場合
 
-## 4. 認証の扱い
-
-トンネル経由の要求は Host が `scenote.example.com` になるため、Scenote は「PC 本体以外の端末」として扱う（`server/src/auth.rs` の `is_local_request`）。
-
-1. PC のブラウザで `http://localhost:8787` を開き、「端末」画面でペアリングコードを発行する。
-2. iPad などで `https://scenote.example.com` を開き、コードを入力する。
-
-Origin と Host の照合（CSRF・WebSocket）は、Cloudflare が Host をそのまま転送するため変更不要。WebSocket（`/api/events`）も Tunnel でそのまま通る。
-
-## 5. 推奨: Cloudflare Access を前段に置く
-
-インターネットへ公開すると、ペアリング画面が誰からも見える状態になる。Zero Trust ダッシュボードの
-**Access → Applications → Self-hosted** で `scenote.example.com` を登録し、自分のメールアドレスだけを許可するポリシーを設定することを推奨する。
-Scenote 自身のペアリング認証と二重になる。
-
-## 6. アイコン
-
-`web/public/` のアイコン（`icon.svg`、`favicon-32.png`、`apple-touch-icon.png`、`icon-192.png`、`icon-512.png`）と
-`manifest.webmanifest` はビルド時に `web/dist/` へコピーされ、iPad の「ホーム画面に追加」でも使われる。
+PC 版のサーバーをそのまま外から使いたい場合は、Cloudflare Tunnel（`cloudflared`）で
+`http://127.0.0.1:8787` を公開できる。その場合も Access で保護し、`httpHostHeader` で
+Host を `localhost` に書き換えないこと（書き換えると PC 本体として扱われ、認証が無効になる）。

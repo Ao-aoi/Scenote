@@ -35,6 +35,8 @@ LLM とユーザーが共同でゲームシナリオを構成・執筆するた�
 | ディレクトリ | 内容 |
 |---|---|
 | `server/` | Rust（axum + SQLite）のローカルサーバー。データ管理・Markdown 変換・HTTP API |
+| `core/` | PC 版と Cloudflare 版で共有する処理（データモデル・Markdown 変換・検証・スキーマ） |
+| `cloudflare/` | Cloudflare 版（Workers + Durable Objects）。PC なしで iPhone などから使う。手順は `docs/deploy-cloudflare.md` |
 | `web/` | TypeScript + Vite の Web UI |
 | `docs/` | 仕様書（Markdown 記法など） |
 
