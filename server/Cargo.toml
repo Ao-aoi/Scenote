@@ -13,6 +13,7 @@ name = "scenote-server"
 path = "src/main.rs"
 
 [dependencies]
+scenote-core = { path = "../core" }
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 sha2 = "0.10"

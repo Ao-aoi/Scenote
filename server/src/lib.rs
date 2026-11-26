@@ -17,12 +17,10 @@ pub mod error;
 pub mod generation;
 pub mod history;
 pub mod llm;
-pub mod logic;
-pub mod markdown;
-pub mod model;
 pub mod preferences;
-pub mod diff;
 pub mod store;
 pub mod store_ai;
 pub mod structure;
 pub mod sync;
+
+pub use scenote_core::{diff, logic, markdown, model};

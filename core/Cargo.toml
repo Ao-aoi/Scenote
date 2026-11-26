@@ -1,0 +1,13 @@
+[package]
+name = "scenote-core"
+version = "0.1.0"
+edition = "2021"
+description = "Scenote の PC 版サーバーと Cloudflare 版で共有する、DB に依存しない処理（データモデル・Markdown 変換・差分・式言語・入力検証）"
+
+[lib]
+name = "scenote_core"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
