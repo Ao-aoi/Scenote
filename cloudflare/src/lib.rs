@@ -9,8 +9,11 @@
 
 pub mod access;
 pub mod api;
+pub mod characters;
 pub mod db;
 pub mod error;
+pub mod files;
+pub mod history;
 pub mod mcp;
 pub mod oauth;
 pub mod store;
@@ -233,7 +236,7 @@ impl ScenoteData {
     /// API の要求を処理する。状態を変える要求はトランザクションの中で処理し、成功したら変更を通知する。
     fn execute(&self, store: Store, method: String, api_path: String, body: String, email: String, client: Option<String>) -> ApiResponse {
         let mutating = api::is_mutating(&method);
-        let path = format!("/api/{api_path}");
+        let path = format!("/api/{}", api_path.split('?').next().unwrap_or(""));
         let response = if mutating {
             self.run_tx(move || {
                 let caller = Caller { email };
@@ -413,6 +416,20 @@ impl ScenoteData {
                 let body = if body.is_null() { String::new() } else { body.to_string() };
                 self.execute(store, method.to_string(), path, body, email, Some("mcp".into()))
             }
+            Ok(mcp::Call::Characters { project_id }) => match store.characters_json(&project_id) {
+                Ok((characters, relations)) => ApiResponse { status: 200, body: Body::Json(json!({ "characters": characters, "relations": relations })) },
+                Err(e) => ApiResponse::error(&e),
+            },
+            Ok(mcp::Call::FileList { project_id }) => match store.get_project(&project_id).and_then(|_| store.list_files(&project_id)) {
+                Ok(files) => ApiResponse {
+                    status: 200,
+                    body: Body::Json(json!(files
+                        .iter()
+                        .map(|f| json!({ "id": f.id, "name": f.name, "pinned": f.pinned, "revision": f.revision, "characters": f.content.chars().count(), "updated_at": f.updated_at }))
+                        .collect::<Vec<_>>())),
+                },
+                Err(e) => ApiResponse::error(&e),
+            },
             Ok(mcp::Call::Append { scene_id, markdown }) => {
                 let path = format!("/api/scenes/{scene_id}/markdown");
                 let r = self.run_tx(move || {
@@ -501,7 +518,10 @@ impl DurableObject for ScenoteData {
         let body = if api::is_mutating(&method) { req.text().await? } else { String::new() };
         let email = req.headers().get(USER_HEADER)?.unwrap_or_default();
         let client = req.headers().get(CLIENT_HEADER)?.filter(|v| v.len() <= 64);
-        let api_path = path.strip_prefix("/api/").unwrap_or("").to_string();
+        let mut api_path = path.strip_prefix("/api/").unwrap_or("").to_string();
+        if let Some(q) = url.query() {
+            api_path = format!("{api_path}?{q}");
+        }
         let response = self.execute(self.store.clone(), method, api_path, body, email, client);
         to_response(response)
     }

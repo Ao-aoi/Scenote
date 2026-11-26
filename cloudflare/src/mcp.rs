@@ -19,6 +19,13 @@ Scenote はゲームシナリオ（章 → 場面 → 要素）を管理する�
 2. 個別の場面は read_scene で読む（要素の ID・リビジョン・分岐の設定つき）。
 3. 書き換える前に、方針を利用者に説明し、合意を得てから書き込む。利用者の文体と既存の設定を尊重する。
 4. 場面全体の書き直しは write_scene（Markdown）、一部の変更は update_element、追記は append_to_scene。
+5. 人物は get_characters で一覧（情報・関係つき）を確認し、create_character・add_character_fact・add_relation などで整理する。
+   世界観・設定資料は参照ファイル（list_files・read_file・create_file・update_file）にまとめる。
+6. 大きな書き換えの前には create_snapshot で保存する。誤った変更は list_history で確認し、restore_snapshot で戻せる
+   （復元の直前の状態も自動で保存される）。
+
+人物の情報（fact）の由来 source: user（利用者が決めた設定）・confirmed（確認済み）・inferred（推定。確信度 confidence 0〜1 が必要）。
+本文から読み取っただけの情報は inferred とし、利用者の設定（user）を勝手に書き換えないでください。
 
 場面の Markdown 記法（空行で区切った1かたまりが1要素）:
 - 地の文: そのまま書く
@@ -86,6 +93,49 @@ pub fn tools() -> Value {
             json!({ "element_id": id("要素"), "base_revision": rev, "kind": { "type": "string" }, "speaker": { "type": "string" }, "body": { "type": "string" }, "attrs": { "type": "object" } }),
             &["element_id", "base_revision"], false),
         tool("delete_element", "要素を削除する。", json!({ "element_id": id("要素") }), &["element_id"], false),
+
+        tool("get_characters", "プロジェクトのキャラクターの一覧を、人物の情報（facts）と関係（relations）つきで返す。",
+            json!({ "project_id": id("プロジェクト") }), &["project_id"], true),
+        tool("create_character", "キャラクターを登録する。", json!({ "project_id": id("プロジェクト"), "name": { "type": "string" }, "aliases": { "type": "array", "items": { "type": "string" } } }), &["project_id", "name"], false),
+        tool("update_character", "キャラクターの名前・別名を変更する。", json!({ "character_id": id("キャラクター"), "name": { "type": "string" }, "aliases": { "type": "array", "items": { "type": "string" } } }), &["character_id"], false),
+        tool("delete_character", "キャラクターを、情報・関係ごと削除する（本文の話者名は残る。事前に利用者へ確認すること）。", json!({ "character_id": id("キャラクター") }), &["character_id"], false),
+        tool("add_character_fact", "人物の情報（プロフィール・性格・口調・目的・秘密など）を追加する。",
+            json!({ "character_id": id("キャラクター"), "category": { "type": "string", "description": "分類（例: 性格・口調・過去・目的・秘密）" }, "text": { "type": "string" },
+                    "source": { "type": "string", "enum": ["user", "confirmed", "inferred"] }, "confidence": { "type": "number" },
+                    "evidence": { "type": "array", "items": { "type": "string" }, "description": "根拠となる要素の ID" } }),
+            &["character_id", "category", "text"], false),
+        tool("update_character_fact", "人物の情報を変更する。status を rejected にすると無効にできる。",
+            json!({ "fact_id": id("情報"), "category": { "type": "string" }, "text": { "type": "string" }, "source": { "type": "string", "enum": ["user", "confirmed", "inferred"] },
+                    "confidence": { "type": "number" }, "status": { "type": "string", "enum": ["active", "proposed", "rejected"] } }),
+            &["fact_id"], false),
+        tool("delete_character_fact", "人物の情報を削除する。", json!({ "fact_id": id("情報") }), &["fact_id"], false),
+        tool("add_relation", "2 人の関係（from から to への見方・関係）を追加する。",
+            json!({ "project_id": id("プロジェクト"), "from_character_id": id("キャラクター"), "to_character_id": id("キャラクター"), "kind": { "type": "string", "description": "関係の種類（例: 幼なじみ・敵対・片思い）" },
+                    "text": { "type": "string" }, "source": { "type": "string", "enum": ["user", "confirmed", "inferred"] }, "confidence": { "type": "number" } }),
+            &["project_id", "from_character_id", "to_character_id", "kind"], false),
+        tool("update_relation", "関係の種類・説明などを変更する（2 人の組み合わせは変えられない）。",
+            json!({ "relation_id": id("関係"), "kind": { "type": "string" }, "text": { "type": "string" }, "source": { "type": "string", "enum": ["user", "confirmed", "inferred"] },
+                    "confidence": { "type": "number" }, "status": { "type": "string", "enum": ["active", "proposed", "rejected"] } }),
+            &["relation_id"], false),
+        tool("delete_relation", "関係を削除する。", json!({ "relation_id": id("関係") }), &["relation_id"], false),
+
+        tool("list_files", "参照ファイル（世界観・設定資料・制作方針など）の一覧を返す（本文は含まない）。", json!({ "project_id": id("プロジェクト") }), &["project_id"], true),
+        tool("read_file", "参照ファイルの本文（Markdown）とリビジョンを返す。", json!({ "file_id": id("参照ファイル") }), &["file_id"], true),
+        tool("create_file", "参照ファイルを作成する。pinned を true にすると常に参照する資料になる。",
+            json!({ "project_id": id("プロジェクト"), "name": { "type": "string" }, "content": { "type": "string" }, "pinned": { "type": "boolean" } }), &["project_id", "name"], false),
+        tool("update_file", "参照ファイルの名前・本文を変更する。base_revision は read_file の revision。",
+            json!({ "file_id": id("参照ファイル"), "base_revision": rev, "name": { "type": "string" }, "content": { "type": "string" }, "pinned": { "type": "boolean" } }),
+            &["file_id", "base_revision"], false),
+        tool("delete_file", "参照ファイルを削除する（事前に利用者へ確認すること）。", json!({ "file_id": id("参照ファイル") }), &["file_id"], false),
+
+        tool("list_history", "編集履歴を新しい順に返す（変更前後の内容と、誰が変更したか）。",
+            json!({ "project_id": id("プロジェクト"), "scene_id": id("場面（絞り込み）"), "limit": { "type": "integer" } }), &["project_id"], true),
+        tool("list_snapshots", "スナップショット（保存した時点）の一覧を返す。", json!({ "project_id": id("プロジェクト") }), &["project_id"], true),
+        tool("create_snapshot", "現在のプロジェクト全体を保存する。大きな書き換えの前に使う。",
+            json!({ "project_id": id("プロジェクト"), "note": { "type": "string", "description": "メモ（例: 第2章の書き直し前）" } }), &["project_id"], false),
+        tool("compare_snapshot", "スナップショットと現在の違いを、場面・参照ファイルごとに返す。", json!({ "snapshot_id": id("スナップショット") }), &["snapshot_id"], true),
+        tool("restore_snapshot", "スナップショットの状態へ戻す（直前の状態は自動で保存される。事前に利用者へ確認すること）。",
+            json!({ "snapshot_id": id("スナップショット") }), &["snapshot_id"], false),
     ])
 }
 
@@ -94,6 +144,10 @@ pub enum Call {
     Api { method: &'static str, path: String, body: Value },
     /// 場面の末尾への追記（読み取りと書き込みを1つのトランザクションで行う）。
     Append { scene_id: String, markdown: String },
+    /// キャラクターの一覧（情報・関係つき）。
+    Characters { project_id: String },
+    /// 参照ファイルの一覧（本文を除く）。
+    FileList { project_id: String },
 }
 
 fn s(args: &Value, key: &str) -> Result<String, String> {
@@ -155,6 +209,38 @@ pub fn to_call(name: &str, args: &Value) -> Result<Call, String> {
         }
         "update_element" => Api { method: "PATCH", path: format!("elements/{}", id("element_id")?), body: pick(args, &["base_revision", "kind", "speaker", "body", "attrs"]) },
         "delete_element" => Api { method: "DELETE", path: format!("elements/{}", id("element_id")?), body: Value::Null },
+        "get_characters" => Call::Characters { project_id: id("project_id")? },
+        "create_character" => Api { method: "POST", path: format!("projects/{}/characters", id("project_id")?), body: pick(args, &["name", "aliases"]) },
+        "update_character" => Api { method: "PATCH", path: format!("characters/{}", id("character_id")?), body: pick(args, &["name", "aliases"]) },
+        "delete_character" => Api { method: "DELETE", path: format!("characters/{}", id("character_id")?), body: Value::Null },
+        "add_character_fact" => Api { method: "POST", path: format!("characters/{}/facts", id("character_id")?), body: pick(args, &["category", "text", "source", "confidence", "evidence"]) },
+        "update_character_fact" => Api { method: "PATCH", path: format!("character-facts/{}", id("fact_id")?), body: pick(args, &["category", "text", "source", "confidence", "status"]) },
+        "delete_character_fact" => Api { method: "DELETE", path: format!("character-facts/{}", id("fact_id")?), body: Value::Null },
+        "add_relation" => Api {
+            method: "POST",
+            path: format!("projects/{}/character-relations", id("project_id")?),
+            body: pick(args, &["from_character_id", "to_character_id", "kind", "text", "source", "confidence"]),
+        },
+        "update_relation" => Api { method: "PATCH", path: format!("character-relations/{}", id("relation_id")?), body: pick(args, &["kind", "text", "source", "confidence", "status"]) },
+        "delete_relation" => Api { method: "DELETE", path: format!("character-relations/{}", id("relation_id")?), body: Value::Null },
+        "list_files" => Call::FileList { project_id: id("project_id")? },
+        "read_file" => Api { method: "GET", path: format!("files/{}", id("file_id")?), body: Value::Null },
+        "create_file" => Api { method: "POST", path: format!("projects/{}/files", id("project_id")?), body: pick(args, &["name", "content", "pinned"]) },
+        "update_file" => Api { method: "PATCH", path: format!("files/{}", id("file_id")?), body: pick(args, &["base_revision", "name", "content", "pinned"]) },
+        "delete_file" => Api { method: "DELETE", path: format!("files/{}", id("file_id")?), body: Value::Null },
+        "list_history" => {
+            let mut q = url::form_urlencoded::Serializer::new(String::new());
+            if let Ok(scene) = id("scene_id") {
+                q.append_pair("scene_id", &scene);
+            }
+            let limit = args.get("limit").and_then(Value::as_i64).unwrap_or(30).clamp(1, 100);
+            q.append_pair("limit", &limit.to_string());
+            Api { method: "GET", path: format!("projects/{}/history?{}", id("project_id")?, q.finish()), body: Value::Null }
+        }
+        "list_snapshots" => Api { method: "GET", path: format!("projects/{}/snapshots", id("project_id")?), body: Value::Null },
+        "create_snapshot" => Api { method: "POST", path: format!("projects/{}/snapshots", id("project_id")?), body: pick(args, &["note"]) },
+        "compare_snapshot" => Api { method: "GET", path: format!("snapshots/{}/compare", id("snapshot_id")?), body: Value::Null },
+        "restore_snapshot" => Api { method: "POST", path: format!("snapshots/{}/restore", id("snapshot_id")?), body: Value::Null },
         _ => return Err(format!("未知のツールです: {name}")),
     })
 }

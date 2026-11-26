@@ -22,6 +22,8 @@ pub const ACTOR_HUMAN: &str = "human";
 pub const ACTOR_AI_APPROVED: &str = "ai_approved";
 pub const ACTOR_AI_MODIFIED: &str = "ai_modified";
 pub const ACTOR_RESTORE: &str = "restore";
+/// MCP で接続した AI が直接書き込んだ変更（Cloudflare 版）。
+pub const ACTOR_AI_DIRECT: &str = "ai_direct";
 
 /// 人間の連続した更新を 1 件にまとめる時間（秒）。
 pub const COALESCE_SECONDS: i64 = 120;

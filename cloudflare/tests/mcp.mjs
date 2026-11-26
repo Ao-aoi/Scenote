@@ -148,6 +148,32 @@ await test("競合と入力の誤りはツールの失敗として返す", async
   assert.equal((await call("unknown_tool", {})).isError, true);
 });
 
+await test("キャラクター・世界観・履歴のツール", async () => {
+  const c = await call("create_character", { project_id: projectId, name: "アオ" });
+  assert.equal(c.isError, false);
+  const k = await call("create_character", { project_id: projectId, name: "カイ" });
+  assert.equal((await call("add_character_fact", { character_id: c.data.id, category: "性格", text: "強がり", source: "inferred", confidence: 0.6 })).isError, false);
+  assert.equal((await call("add_relation", { project_id: projectId, from_character_id: c.data.id, to_character_id: k.data.id, kind: "幼なじみ" })).isError, false);
+  const cast = await call("get_characters", { project_id: projectId });
+  assert.equal(cast.data.characters.length, 2);
+  assert.equal(cast.data.characters.find((x) => x.name === "アオ").facts[0].text, "強がり");
+  assert.equal(cast.data.relations[0].kind, "幼なじみ");
+  const f = await call("create_file", { project_id: projectId, name: "世界観", content: "雨の多い港町" });
+  assert.equal(f.isError, false);
+  const files = await call("list_files", { project_id: projectId });
+  assert.equal(files.data[0].name, "世界観");
+  assert.equal(files.data[0].content, undefined);
+  const read = await call("read_file", { file_id: f.data.id });
+  assert.equal(read.data.content, "雨の多い港町");
+  assert.equal((await call("update_file", { file_id: f.data.id, base_revision: read.data.revision, content: "霧の港町" })).isError, false);
+  const snap = await call("create_snapshot", { project_id: projectId, note: "MCP での保存" });
+  assert.equal(snap.isError, false);
+  const hist = await call("list_history", { project_id: projectId, limit: 5 });
+  assert.equal(hist.data[0].actor, "ai_direct");
+  assert.equal(hist.data[0].target_type, "file");
+  assert.equal((await call("compare_snapshot", { snapshot_id: snap.data.id })).isError, false);
+});
+
 await test("画面での編集は人間の由来、AI の要素を人間が直すと mixed", async () => {
   const scene = await call("read_scene", { scene_id: sceneId });
   const el = scene.data.elements[1];

@@ -148,10 +148,94 @@ await test("書き出し（Markdown・JSON）", async () => {
   const js = await api("GET", `/projects/${project.id}/export/json`);
   assert.equal(js.data.format, "scenote-project");
   assert.equal(js.data.schema_version, meta.data.schema_version);
+  assert.ok(Array.isArray(js.data.reference_files));
+  assert.ok(Array.isArray(js.data.characters));
+});
+
+await test("参照ファイル（世界観）の作成・更新・競合・削除", async () => {
+  const f = await api("POST", `/projects/${project.id}/files`, { name: "世界観", content: "魔法のない世界" });
+  assert.equal(f.status, 201);
+  const u = await api("PATCH", `/files/${f.data.id}`, { base_revision: f.data.revision, content: "魔法が失われた世界", pinned: true });
+  assert.equal(u.data.content, "魔法が失われた世界");
+  assert.equal(u.data.pinned, true);
+  assert.equal((await api("PATCH", `/files/${f.data.id}`, { base_revision: f.data.revision, content: "x" })).status, 409);
+  const list = (await api("GET", `/projects/${project.id}/files`)).data;
+  assert.equal(list.length, 1);
+  const tmp = (await api("POST", `/projects/${project.id}/files`, { name: "メモ" })).data;
+  assert.equal((await api("DELETE", `/files/${tmp.id}`)).status, 204);
+});
+
+let aoi, kai;
+await test("キャラクター・情報・関係", async () => {
+  aoi = (await api("POST", `/projects/${project.id}/characters`, { name: "アオ", aliases: ["あおちゃん"] })).data;
+  kai = (await api("POST", `/projects/${project.id}/characters`, { name: "カイ" })).data;
+  assert.equal((await api("POST", `/projects/${project.id}/characters`, { name: "アオ" })).status, 400);
+  const fact = await api("POST", `/characters/${aoi.id}/facts`, { category: "性格", text: "強がり" });
+  assert.equal(fact.status, 201);
+  assert.equal(fact.data.source, "user");
+  assert.equal((await api("POST", `/characters/${aoi.id}/facts`, { category: "性格", text: "x", source: "inferred" })).status, 400);
+  const inferred = await api("POST", `/characters/${aoi.id}/facts`, { category: "過去", text: "兄がいる", source: "inferred", confidence: 0.4 });
+  assert.equal(inferred.status, 201);
+  const rel = await api("POST", `/projects/${project.id}/character-relations`, { from_character_id: aoi.id, to_character_id: kai.id, kind: "幼なじみ" });
+  assert.equal(rel.status, 201);
+  assert.equal((await api("PATCH", `/character-relations/${rel.data.id}`, { text: "家が隣" })).data.text, "家が隣");
+  assert.equal((await api("GET", `/characters/${aoi.id}/facts`)).data.length, 2);
+  // 要素にキャラクターを結びつける。
+  const el = (await api("POST", `/scenes/${sceneId}/elements`, { kind: "Dialogue", speaker: "カイ", body: "よう", character_id: kai.id })).data.element;
+  assert.equal(el.character_id, kai.id);
+  // 削除すると情報・関係も消え、要素の結びつきは外れる（話者名は残る）。
+  assert.equal((await api("DELETE", `/characters/${kai.id}`)).status, 204);
+  assert.equal((await api("GET", `/projects/${project.id}/character-relations`)).data.length, 0);
+  const after = (await api("GET", `/scenes/${sceneId}`)).data.elements.find((e) => e.id === el.id);
+  assert.equal(after.character_id, null);
+  assert.equal(after.speaker, "カイ");
+});
+
+await test("編集履歴（連続した更新はまとめる）", async () => {
+  const scene = (await api("GET", `/scenes/${sceneId}`)).data;
+  let el = scene.elements[0];
+  for (const body of ["一", "一二", "一二三"]) {
+    el = (await api("PATCH", `/elements/${el.id}`, { base_revision: el.revision, body })).data.element;
+  }
+  const hist = (await api("GET", `/projects/${project.id}/history?limit=5`)).data;
+  const latest = hist[0];
+  assert.equal(latest.target_id, el.id);
+  assert.equal(latest.actor, "human");
+  assert.equal(latest.after.body, "一二三");
+  assert.ok(latest.diff.length > 0);
+  assert.equal(hist.filter((h) => h.target_id === el.id && h.action === "update").length, 1);
+  const filtered = (await api("GET", `/projects/${project.id}/history?scene_id=${sceneId}`)).data;
+  assert.ok(filtered.every((h) => h.scene_id === sceneId));
+  const settings = await api("PUT", "/settings/history", { max_entries: 200 });
+  assert.equal(settings.data.max_entries, 200);
+  assert.equal((await api("PUT", "/settings/history", { max_entries: 1 })).status, 400);
+});
+
+await test("スナップショットの作成・比較・復元", async () => {
+  const snap = await api("POST", `/projects/${project.id}/snapshots`, { note: "書き直し前" });
+  assert.equal(snap.status, 201);
+  const scene = (await api("GET", `/scenes/${sceneId}`)).data;
+  const el = scene.elements[0];
+  await api("PATCH", `/elements/${el.id}`, { base_revision: el.revision, body: "すっかり書き換えた" });
+  await api("POST", `/characters/${aoi.id}/facts`, { category: "口調", text: "早口" });
+  const cmp = (await api("GET", `/snapshots/${snap.data.id}/compare`)).data;
+  assert.ok(cmp.some((c) => c.item_type === "scene" && c.status === "changed"));
+  const restored = await api("POST", `/snapshots/${snap.data.id}/restore`);
+  assert.equal(restored.status, 200);
+  assert.equal(restored.data.kind, "before_restore");
+  const back = (await api("GET", `/scenes/${sceneId}`)).data;
+  assert.equal(back.elements[0].body, el.body);
+  assert.ok(back.elements[0].revision > el.revision);
+  assert.equal((await api("GET", `/characters/${aoi.id}/facts`)).data.length, 2);
+  const snaps = (await api("GET", `/projects/${project.id}/snapshots`)).data;
+  assert.equal(snaps.length, 2);
+  const hist = (await api("GET", `/projects/${project.id}/history?limit=1`)).data;
+  assert.equal(hist[0].action, "restore");
+  assert.equal((await api("DELETE", `/snapshots/${restored.data.id}`)).status, 204);
 });
 
 await test("未対応の機能は 501、存在しない API は 404", async () => {
-  assert.deepEqual((await api("GET", `/projects/${project.id}/files`)).data, []);
+  assert.deepEqual((await api("GET", `/projects/${project.id}/chats`)).data, []);
   assert.equal((await api("POST", `/projects/${project.id}/chats`, { title: "x" })).status, 501);
   assert.equal((await api("GET", "/usage")).status, 501);
   assert.equal((await api("GET", "/nothing")).status, 404);

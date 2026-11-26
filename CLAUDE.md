@@ -827,14 +827,15 @@ LLMが返した構造化データは、必ずアプリ側でスキーマ検証�
 ### 20.7 Cloudflare 版（PC を使わずに使うための版）
 
 - **構成**：`cloudflare/`（Rust、workers-rs）。Worker が `/api/` を処理し、画面は静的アセットとして配信する。データは Durable Object（`ScenoteData`、1インスタンス）内蔵の SQLite に保存する。手順は `docs/deploy-cloudflare.md`。
-- **共有コード**：DB に依存しない処理（データモデル・Markdown 変換・差分・式言語・入力検証・分岐の設定の検証・スキーマの SQL・変更通知の範囲）は `core/`（`scenote-core`）に置き、PC 版と Cloudflare 版の両方が使う。規則を変えるときは `core/` を変更する。
+- **共有コード**：DB に依存しない処理（データモデル・Markdown 変換・差分・式言語・入力検証・分岐の設定の検証・スキーマの SQL・変更通知の範囲・キャラクター・参照ファイル・履歴とスナップショットの型と比較）は `core/`（`scenote-core`）に置き、PC 版と Cloudflare 版の両方が使う。規則を変えるときは `core/` を変更する。
 - **スキーマ**：PC 版と同じ SQL（`core/src/schema/`）を順に適用する。適用済みの版は `PRAGMA user_version` の代わりに `_scenote_meta` 表で管理する。
 - **トランザクション**：状態を変える要求は `ctx.storage.transactionSync` の中で処理し、失敗した要求の書き込みは取り消す。
 - **認証**：Cloudflare Access。Worker が `Cf-Access-Jwt-Assertion` の署名（RS256、WebCrypto）・発行元・AUD・有効期限を検証する。任意で `ALLOWED_EMAILS` でも限定する。`*.workers.dev` は使わない。CSRF 対策（`X-Scenote` ヘッダー・Origin の照合）は PC 版と同じ。開発時のみ、localhost で `SCENOTE_DEV_USER` を設定すると Access を省ける。
-- **機能の段階的な移植**：`/api/meta` の `features` で使える機能を返し、画面（`web/src/edition.ts`）は使えない機能の入口を隠す。PC 版は `features` を返さない（すべて使える）。第1段階は執筆の基本（プロジェクト・章・場面・要素・Markdown・分岐の設定・書き出し・変更通知）のみ。未対応の API は 501 を返す。編集履歴はまだ記録しない。
+- **機能の段階的な移植**：`/api/meta` の `features` で使える機能を返し、画面（`web/src/edition.ts`）は使えない機能の入口を隠す。PC 版は `features` を返さない（すべて使える）。移植済みは、執筆の基本（プロジェクト・章・場面・要素・Markdown・分岐の設定・書き出し・変更通知）、編集履歴とスナップショット、キャラクター（情報・関係）、参照ファイル。AI チャット・提案・嗜好学習・作品づくり・変数と構造チェック・端末管理は未移植で、未対応の API は 501 を返す。キャラクター管理の画面は PC 版と同じく未実装で、API と MCP から扱う。
 - **かんたんモード**：AI が使えない版では、入力欄の内容を AI を通さず場面の Markdown として末尾に追加する。
 - **MCP サーバー**：Cloudflare 版の `/mcp`（Streamable HTTP、JSON 応答のみ。`cloudflare/src/mcp.rs`）。外部の上位モデル（Claude・ChatGPT など）が、全体の流れの整合性・人物関係・面白さを検討する「プロデューサー」として使う。ツールは HTTP API の呼び出しに置き換えて処理し、検証・競合検出・変更通知は画面と同じになる。
-- **MCP からの書き込み（6.2 の例外）**：利用者の判断により、MCP で接続した AI は承認を経ずに直接書き込める。由来は `ai_direct`（`core` の `ORIGIN_AI_DIRECT`）とし、人間の編集と混ざれば `mixed` にする。接続の許可の画面で直接書き換えられることを明示する。履歴の移植後は、MCP の書き込みも履歴に記録する。
+- **MCP からの書き込み（6.2 の例外）**：利用者の判断により、MCP で接続した AI は承認を経ずに直接書き込める。由来は `ai_direct`（`core` の `ORIGIN_AI_DIRECT`）とし、人間の編集と混ざれば `mixed` にする。接続の許可の画面で直接書き換えられることを明示する。MCP の書き込みは履歴に主体 `ai_direct` で記録し、スナップショットの復元で戻せる。AI には大きな書き換えの前にスナップショットを作るよう指示する。
+- **履歴のまとめ方（Cloudflare 版）**：同じ主体（人間、または MCP の AI）による同じ対象への連続した更新を、120秒以内なら1件にまとめる。
 - **MCP の認証**：OAuth 2.1（`cloudflare/src/oauth.rs`）。動的登録・認可コード + PKCE（S256 のみ）・リフレッシュトークン（使うたびに作り直す）。本人の確認は Access で保護した `/oauth/authorize` で行い、利用者が許可した場合だけコードを発行する。コードとトークンは SHA-256 のハッシュだけを保存する。アクセストークンは1時間、リフレッシュトークンは30日。`/mcp`・`/oauth/register`・`/oauth/token`・`/.well-known/*` は Access の対象から外す。接続中のクライアントは設定画面から解除できる。
 
 ### 20.8 保留中の事項

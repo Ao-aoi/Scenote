@@ -13,7 +13,10 @@ use scenote_core::model::*;
 use scenote_core::schema::MIGRATIONS;
 use scenote_core::validate::{self, align, content_of, origin_after_edit};
 
+use scenote_core::history::{ACTION_CREATE, ACTION_DELETE, ACTION_REORDER, ACTION_UPDATE, TARGET_SCENE};
+
 use crate::db::{Db, NOW};
+use crate::history::Change;
 use crate::error::{AppError, Result};
 use crate::p;
 
@@ -234,14 +237,11 @@ impl Store {
 
     pub fn delete_project(&self, id: &str) -> Result<()> {
         self.get_project(id)?;
-        // 外部キーの連鎖削除に加え、本文の表は明示的に消す。
-        self.db.exec(
-            "DELETE FROM elements WHERE scene_id IN
-               (SELECT s.id FROM scenes s JOIN chapters c ON c.id = s.chapter_id WHERE c.project_id = ?)",
-            p![id],
-        )?;
-        self.db.exec("DELETE FROM scenes WHERE chapter_id IN (SELECT id FROM chapters WHERE project_id = ?)", p![id])?;
-        self.db.exec("DELETE FROM chapters WHERE project_id = ?", p![id])?;
+        // 外部キーの連鎖削除に頼らず、関係する表を明示的に消す。
+        self.clear_project_content(id)?;
+        for table in ["history", "snapshots", "chats", "proposals", "variables"] {
+            self.db.exec(&format!("DELETE FROM {table} WHERE project_id = ?"), p![id])?;
+        }
         self.db.exec("DELETE FROM projects WHERE id = ?", p![id])?;
         Ok(())
     }
@@ -288,6 +288,9 @@ impl Store {
 
     pub fn delete_chapter(&self, id: &str) -> Result<()> {
         let chapter = self.get_chapter(id)?;
+        for scene in self.list_scenes(id)? {
+            self.record_scene_delete(&chapter.project_id, &scene)?;
+        }
         self.db.exec("DELETE FROM elements WHERE scene_id IN (SELECT id FROM scenes WHERE chapter_id = ?)", p![id])?;
         self.db.exec("DELETE FROM scenes WHERE chapter_id = ?", p![id])?;
         self.db.exec("DELETE FROM chapters WHERE id = ?", p![id])?;
@@ -367,7 +370,15 @@ impl Store {
         if summary == scene.summary {
             return Ok(scene);
         }
-        self.db.exec("UPDATE scenes SET summary = ? WHERE id = ?", p![summary, id])?;
+        self.db.exec("UPDATE scenes SET summary = ? WHERE id = ?", p![summary.as_str(), id])?;
+        let project_id = self.project_of_scene(id)?;
+        self.record_scene(
+            &project_id,
+            &scene,
+            ACTION_UPDATE,
+            Some(json!({ "title": scene.title, "body": scene.summary })),
+            Some(json!({ "title": scene.title, "body": summary })),
+        )?;
         self.touch_scene(id)?;
         self.get_scene(id)
     }
@@ -375,6 +386,7 @@ impl Store {
     pub fn delete_scene(&self, id: &str) -> Result<()> {
         let scene = self.get_scene(id)?;
         let chapter = self.get_chapter(&scene.chapter_id)?;
+        self.record_scene_delete(&chapter.project_id, &scene)?;
         self.db.exec("DELETE FROM elements WHERE scene_id = ?", p![id])?;
         self.db.exec("DELETE FROM scenes WHERE id = ?", p![id])?;
         self.renumber("scenes", "chapter_id", &scene.chapter_id)?;
@@ -404,9 +416,8 @@ impl Store {
     /// 要素を追加する。`position` 省略時は末尾、指定時はその位置へ挿入する。
     pub fn create_element(&self, scene_id: &str, content: ElementContent, position: Option<i64>, character_id: Option<&str>) -> Result<Element> {
         self.get_scene(scene_id)?;
-        if character_id.is_some() {
-            // キャラクターの管理は第1段階では未対応。
-            return Err(AppError::Unavailable);
+        if let Some(c) = character_id {
+            self.check_character_for_scene(scene_id, c)?;
         }
         let content = validate::clean_content(content).map_err(invalid)?;
         let count: i64 = self.db.scalar("SELECT COUNT(*) AS v FROM elements WHERE scene_id = ?", p![scene_id])?;
@@ -416,6 +427,10 @@ impl Store {
             p![scene_id, position],
         )?;
         let id = self.insert_element(scene_id, &content, position, self.origin)?;
+        if let Some(c) = character_id {
+            self.db.exec("UPDATE elements SET character_id = ? WHERE id = ?", p![c, id.as_str()])?;
+        }
+        self.record_element(scene_id, &id, ACTION_CREATE, None, Some((&content, character_id)))?;
         self.touch_scene(scene_id)?;
         self.get_element(&id)
     }
@@ -426,9 +441,10 @@ impl Store {
         if current.revision != base_revision {
             return Err(AppError::Conflict { current: current.revision });
         }
-        if matches!(patch.character_id, Some(Some(_))) {
-            return Err(AppError::Unavailable);
+        if let Some(Some(c)) = &patch.character_id {
+            self.check_character_for_scene(&current.scene_id, c)?;
         }
+        let previous = content_of(&current);
         let origin = origin_after_edit(&current.origin, self.origin);
         let content = validate::clean_content(ElementContent {
             kind: patch.kind.unwrap_or(current.kind),
@@ -444,9 +460,20 @@ impl Store {
         if let Some(a) = &attrs {
             self.db.exec("UPDATE elements SET attrs = ? WHERE id = ?", p![a.to_string(), id])?;
         }
-        if let Some(None) = patch.character_id {
-            self.db.exec("UPDATE elements SET character_id = NULL WHERE id = ?", p![id])?;
+        if let Some(c) = &patch.character_id {
+            self.db.exec("UPDATE elements SET character_id = ? WHERE id = ?", p![c.clone(), id])?;
         }
+        let after_character = match &patch.character_id {
+            Some(c) => c.as_deref(),
+            None => current.character_id.as_deref(),
+        };
+        self.record_element(
+            &current.scene_id,
+            id,
+            ACTION_UPDATE,
+            Some((&previous, current.character_id.as_deref())),
+            Some((&content, after_character)),
+        )?;
         self.touch_scene(&current.scene_id)?;
         self.get_element(id)
     }
@@ -478,13 +505,19 @@ impl Store {
     pub fn delete_element(&self, id: &str) -> Result<()> {
         let element = self.get_element(id)?;
         self.db.exec("DELETE FROM elements WHERE id = ?", p![id])?;
+        self.record_element(&element.scene_id, id, ACTION_DELETE, Some((&content_of(&element), element.character_id.as_deref())), None)?;
         self.renumber("elements", "scene_id", &element.scene_id)?;
         self.touch_scene(&element.scene_id)
     }
 
     pub fn reorder_elements(&self, scene_id: &str, ids: &[String]) -> Result<()> {
-        self.get_scene(scene_id)?;
+        let scene = self.get_scene(scene_id)?;
+        let before = self.child_ids("elements", "scene_id", scene_id)?;
         self.apply_order("elements", "scene_id", scene_id, ids)?;
+        if before != ids {
+            let project_id = self.project_of_scene(scene_id)?;
+            self.record_scene(&project_id, &scene, ACTION_REORDER, Some(json!({ "order": before })), Some(json!({ "order": ids })))?;
+        }
         self.touch_scene(scene_id)
     }
 
@@ -520,16 +553,19 @@ impl Store {
                     used.insert(existing.id.as_str());
                     if old_contents[*i] != new[new_index] {
                         self.update_element_content(&existing.id, &new[new_index], origin_after_edit(&existing.origin, self.origin))?;
+                        self.record_element(scene_id, &existing.id, ACTION_UPDATE, Some((&old_contents[*i], None)), Some((&new[new_index], None)))?;
                     }
                     self.db.exec("UPDATE elements SET position = ? WHERE id = ?", p![position, existing.id.as_str()])?;
                 }
                 None => {
-                    self.insert_element(scene_id, &new[new_index], position, self.origin)?;
+                    let id = self.insert_element(scene_id, &new[new_index], position, self.origin)?;
+                    self.record_element(scene_id, &id, ACTION_CREATE, None, Some((&new[new_index], None)))?;
                 }
             }
         }
         for existing in old.iter().filter(|e| !used.contains(e.id.as_str())) {
             self.db.exec("DELETE FROM elements WHERE id = ?", p![existing.id.as_str()])?;
+            self.record_element(scene_id, &existing.id, ACTION_DELETE, Some((&content_of(existing), existing.character_id.as_deref())), None)?;
         }
         self.touch_scene(scene_id)?;
         self.scene_detail(scene_id)
@@ -584,19 +620,34 @@ impl Store {
             chapters.push(chapter);
         }
         let exported_at: String = self.db.scalar(&format!("SELECT {NOW} AS v"), p![])?;
+        let (characters, relations) = self.characters_json(project_id)?;
         Ok(json!({
             "format": "scenote-project",
             "schema_version": SCHEMA_VERSION,
             "exported_at": exported_at,
             "project": tree.project,
             "chapters": chapters,
-            "reference_files": [],
-            "characters": [],
-            "character_relations": [],
+            "reference_files": self.list_files(project_id)?,
+            "characters": characters,
+            "character_relations": relations,
         }))
     }
 
     // ---- 内部 ---------------------------------------------------------
+
+    /// 場面の削除を、その時点の本文（Markdown 表現）とともに履歴に残す。
+    fn record_scene_delete(&self, project_id: &str, scene: &Scene) -> Result<()> {
+        let markdown = self.scene_markdown(&scene.id)?.1;
+        self.record(Change {
+            project_id,
+            scene_id: Some(&scene.id),
+            target_type: TARGET_SCENE,
+            target_id: &scene.id,
+            action: ACTION_DELETE,
+            before: Some(json!({ "title": scene.title, "body": markdown })),
+            after: None,
+        })
+    }
 
     fn next_position(&self, table: &str, parent_col: &str, parent_id: &str) -> Result<i64> {
         self.db.scalar(&format!("SELECT COUNT(*) AS v FROM {table} WHERE {parent_col} = ?"), p![parent_id])

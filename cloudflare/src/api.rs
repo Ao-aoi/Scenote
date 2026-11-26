@@ -8,10 +8,11 @@ use serde_json::{json, Value};
 use scenote_core::model::*;
 
 use crate::error::{AppError, Result};
+use crate::files::FilePatch;
 use crate::store::{ElementPatch, Store};
 
 /// Cloudflare 版で使える機能。画面はこれを見て、使えない機能の入口を隠す。
-pub const FEATURES: [&str; 2] = ["export", "mcp"];
+pub const FEATURES: [&str; 4] = ["export", "mcp", "history", "files"];
 
 pub enum Body {
     Json(Value),
@@ -152,6 +153,34 @@ fn nullable<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Optio
 }
 
 #[derive(Deserialize)]
+struct CreateFile {
+    name: String,
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    pinned: bool,
+}
+
+#[derive(Deserialize)]
+struct UpdateFile {
+    base_revision: i64,
+    name: Option<String>,
+    content: Option<String>,
+    pinned: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct HistorySettings {
+    max_entries: i64,
+}
+
+#[derive(Deserialize, Default)]
+struct SnapshotBody {
+    #[serde(default)]
+    note: String,
+}
+
+#[derive(Deserialize)]
 struct MarkdownBody {
     base_revision: i64,
     markdown: String,
@@ -177,8 +206,13 @@ fn attachment(name: &str, ext: &str, content_type: &'static str, text: String) -
     ApiResponse { status: 200, body: Body::Download { content_type, disposition, text } }
 }
 
+fn query_param(query: &str, key: &str) -> Option<String> {
+    url::form_urlencoded::parse(query.as_bytes()).find(|(k, _)| k == key).map(|(_, v)| v.into_owned())
+}
+
 fn route(store: &Store, req: &ApiRequest) -> Result<ApiResponse> {
-    let segments: Vec<&str> = req.path.trim_end_matches('/').split('/').collect();
+    let (path, query) = req.path.split_once('?').unwrap_or((req.path, ""));
+    let segments: Vec<&str> = path.trim_end_matches('/').split('/').collect();
     let body = req.body;
     match (req.method, segments.as_slice()) {
         ("GET", ["meta"]) => ApiResponse::ok(json!({
@@ -229,8 +263,76 @@ fn route(store: &Store, req: &ApiRequest) -> Result<ApiResponse> {
             let text = serde_json::to_string_pretty(&store.export_json(id)?).map_err(|e| AppError::Internal(e.to_string()))?;
             Ok(attachment(&name, "json", "application/json; charset=utf-8", text))
         }
-        // 第1段階で未対応の一覧は、画面が空の一覧として扱えるよう空で返す。
-        ("GET", ["projects", id, "files" | "chats" | "characters" | "character-relations" | "variables"]) => {
+        // ---- 参照ファイル（世界観・設定資料）
+        ("GET", ["projects", id, "files"]) => {
+            store.get_project(id)?;
+            ApiResponse::ok(store.list_files(id)?)
+        }
+        ("POST", ["projects", id, "files"]) => {
+            let b: CreateFile = parse(body)?;
+            ApiResponse::created(store.create_file(id, &b.name, &b.content, b.pinned)?)
+        }
+        ("GET", ["files", id]) => ApiResponse::ok(store.get_file(id)?),
+        ("PATCH", ["files", id]) => {
+            let b: UpdateFile = parse(body)?;
+            ApiResponse::ok(store.update_file(id, b.base_revision, FilePatch { name: b.name, content: b.content, pinned: b.pinned })?)
+        }
+        ("DELETE", ["files", id]) => {
+            store.delete_file(id)?;
+            ApiResponse::no_content()
+        }
+
+        // ---- キャラクター・人物の情報・関係
+        ("GET", ["projects", id, "characters"]) => ApiResponse::ok(store.list_characters(id)?),
+        ("POST", ["projects", id, "characters"]) => ApiResponse::created(store.create_character(id, parse(body)?)?),
+        ("GET", ["characters", id]) => ApiResponse::ok(store.get_character(id)?),
+        ("PATCH", ["characters", id]) => ApiResponse::ok(store.update_character(id, parse(body)?)?),
+        ("DELETE", ["characters", id]) => {
+            store.delete_character(id)?;
+            ApiResponse::no_content()
+        }
+        ("GET", ["characters", id, "facts"]) => ApiResponse::ok(store.list_facts(id)?),
+        ("POST", ["characters", id, "facts"]) => ApiResponse::created(store.create_fact(id, parse(body)?)?),
+        ("PATCH", ["character-facts", id]) => ApiResponse::ok(store.update_fact(id, parse(body)?)?),
+        ("DELETE", ["character-facts", id]) => {
+            store.delete_fact(id)?;
+            ApiResponse::no_content()
+        }
+        ("GET", ["projects", id, "character-relations"]) => ApiResponse::ok(store.list_relations(id)?),
+        ("POST", ["projects", id, "character-relations"]) => ApiResponse::created(store.create_relation(id, parse(body)?)?),
+        ("PATCH", ["character-relations", id]) => ApiResponse::ok(store.update_relation(id, parse(body)?)?),
+        ("DELETE", ["character-relations", id]) => {
+            store.delete_relation(id)?;
+            ApiResponse::no_content()
+        }
+
+        // ---- 編集履歴・スナップショット
+        ("GET", ["projects", id, "history"]) => {
+            let scene = query_param(query, "scene_id").filter(|v| !v.is_empty());
+            let before = query_param(query, "before").and_then(|v| v.parse().ok());
+            let limit = query_param(query, "limit").and_then(|v| v.parse().ok()).unwrap_or(100);
+            ApiResponse::ok(store.list_history(id, scene.as_deref(), before, limit)?)
+        }
+        ("GET", ["settings", "history"]) => ApiResponse::ok(json!({ "max_entries": store.history_limit()? })),
+        ("PUT", ["settings", "history"]) => {
+            let b: HistorySettings = parse(body)?;
+            store.set_history_limit(b.max_entries)?;
+            ApiResponse::ok(json!({ "max_entries": store.history_limit()? }))
+        }
+        ("GET", ["projects", id, "snapshots"]) => ApiResponse::ok(store.list_snapshots(id)?),
+        ("POST", ["projects", id, "snapshots"]) => {
+            let b: SnapshotBody = parse(body)?;
+            ApiResponse::created(store.create_snapshot(id, &b.note, scenote_core::history::SNAPSHOT_MANUAL)?)
+        }
+        ("DELETE", ["snapshots", id]) => {
+            store.delete_snapshot(id)?;
+            ApiResponse::no_content()
+        }
+        ("GET", ["snapshots", id, "compare"]) => ApiResponse::ok(store.compare_snapshot(id)?),
+        ("POST", ["snapshots", id, "restore"]) => ApiResponse::ok(store.restore_snapshot(id)?),
+
+        // 未対応の一覧は、画面が空の一覧として扱えるよう空で返す。
+        ("GET", ["projects", id, "chats" | "variables"]) => {
             store.get_project(id)?;
             ApiResponse::ok(json!([]))
         }
