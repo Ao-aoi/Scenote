@@ -99,16 +99,7 @@ pub fn select_fixed(
 }
 
 /// LLM の応答から JSON オブジェクトを取り出す。コードフェンスや前後の文章があっても許容する。
-pub fn extract_json(text: &str) -> Option<Value> {
-    let start = text.find('{')?;
-    let end = text.rfind('}')?;
-    if end < start {
-        return None;
-    }
-    serde_json::from_str::<Value>(&text[start..=end])
-        .ok()
-        .filter(Value::is_object)
-}
+pub use scenote_core::llm::extract_json;
 
 fn selection_request(candidates: &[ReferenceFile], request: &str) -> LlmRequest {
     let mut list = String::new();

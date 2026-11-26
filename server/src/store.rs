@@ -13,9 +13,25 @@ use crate::error::{AppError, Result};
 use crate::history::{self as hist, record_element, record_element_linked, ACTION_CREATE, ACTION_DELETE, ACTION_REORDER, ACTION_UPDATE, ACTOR_HUMAN};
 use crate::markdown::{self, ChapterDoc, ProjectDoc, SceneDoc};
 use crate::model::*;
+pub(crate) use scenote_core::validate::{align, content_of, origin_after_human_edit};
+
+pub(crate) fn clean_title(what: &str, title: &str) -> Result<String> {
+    scenote_core::validate::clean_title(what, title).map_err(AppError::Invalid)
+}
+
+fn clean_templates(templates: &[String]) -> Result<Vec<String>> {
+    scenote_core::validate::clean_templates(templates).map_err(AppError::Invalid)
+}
+
+pub(crate) fn clean_content(content: ElementContent) -> Result<ElementContent> {
+    scenote_core::validate::clean_content(content).map_err(AppError::Invalid)
+}
+
+pub(crate) fn clean_summary(summary: &str) -> Result<String> {
+    scenote_core::validate::clean_summary(summary).map_err(AppError::Invalid)
+}
 
 pub(crate) const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
-const MAX_TITLE_CHARS: usize = 200;
 
 pub struct Store {
     pub(crate) conn: Connection,
@@ -41,52 +57,6 @@ pub struct ElementPatch {
 
 pub(crate) fn new_id() -> String {
     Uuid::new_v4().to_string()
-}
-
-pub(crate) fn clean_title(what: &str, title: &str) -> Result<String> {
-    let title = title.trim();
-    if title.is_empty() {
-        return Err(AppError::Invalid(format!("{what}を入力してください")));
-    }
-    if title.chars().count() > MAX_TITLE_CHARS {
-        return Err(AppError::Invalid(format!(
-            "{what}は{MAX_TITLE_CHARS}文字以内で入力してください"
-        )));
-    }
-    if title.chars().any(|c| c.is_control()) {
-        return Err(AppError::Invalid(format!("{what}に改行などの制御文字は使えません")));
-    }
-    Ok(title.to_string())
-}
-
-fn clean_templates(templates: &[String]) -> Result<Vec<String>> {
-    let mut out: Vec<String> = Vec::new();
-    for t in templates {
-        if !TEMPLATES.contains(&t.as_str()) {
-            return Err(AppError::Invalid(format!("未知のテンプレートです: {t}")));
-        }
-        if !out.contains(t) {
-            out.push(t.clone());
-        }
-    }
-    Ok(out)
-}
-
-pub(crate) fn clean_content(content: ElementContent) -> Result<ElementContent> {
-    if !is_valid_kind(&content.kind) {
-        return Err(AppError::Invalid(
-            "要素の種類は英字で始まる英数字で指定してください".into(),
-        ));
-    }
-    if !is_valid_speaker(&content.speaker) {
-        return Err(AppError::Invalid(
-            "キャラクター名に [ ] : * と改行は使えません（100文字以内）".into(),
-        ));
-    }
-    Ok(ElementContent {
-        body: content.body.replace("\r\n", "\n").replace('\r', "\n"),
-        ..content
-    })
 }
 
 fn project_from_row(row: &Row) -> rusqlite::Result<Project> {
@@ -179,49 +149,49 @@ impl Store {
         }
         if version < 1 {
             let tx = self.conn.transaction()?;
-            tx.execute_batch(include_str!("schema_v1.sql"))?;
+            tx.execute_batch(scenote_core::schema::MIGRATIONS[1 - 1])?;
             tx.pragma_update(None, "user_version", 1)?;
             tx.commit()?;
         }
         if version < 2 {
             let tx = self.conn.transaction()?;
-            tx.execute_batch(include_str!("schema_v2.sql"))?;
+            tx.execute_batch(scenote_core::schema::MIGRATIONS[2 - 1])?;
             tx.pragma_update(None, "user_version", 2)?;
             tx.commit()?;
         }
         if version < 3 {
             let tx = self.conn.transaction()?;
-            tx.execute_batch(include_str!("schema_v3.sql"))?;
+            tx.execute_batch(scenote_core::schema::MIGRATIONS[3 - 1])?;
             tx.pragma_update(None, "user_version", 3)?;
             tx.commit()?;
         }
         if version < 4 {
             let tx = self.conn.transaction()?;
-            tx.execute_batch(include_str!("schema_v4.sql"))?;
+            tx.execute_batch(scenote_core::schema::MIGRATIONS[4 - 1])?;
             tx.pragma_update(None, "user_version", 4)?;
             tx.commit()?;
         }
         if version < 5 {
             let tx = self.conn.transaction()?;
-            tx.execute_batch(include_str!("schema_v5.sql"))?;
+            tx.execute_batch(scenote_core::schema::MIGRATIONS[5 - 1])?;
             tx.pragma_update(None, "user_version", 5)?;
             tx.commit()?;
         }
         if version < 6 {
             let tx = self.conn.transaction()?;
-            tx.execute_batch(include_str!("schema_v6.sql"))?;
+            tx.execute_batch(scenote_core::schema::MIGRATIONS[6 - 1])?;
             tx.pragma_update(None, "user_version", 6)?;
             tx.commit()?;
         }
         if version < 7 {
             let tx = self.conn.transaction()?;
-            tx.execute_batch(include_str!("schema_v7.sql"))?;
+            tx.execute_batch(scenote_core::schema::MIGRATIONS[7 - 1])?;
             tx.pragma_update(None, "user_version", 7)?;
             tx.commit()?;
         }
         if version < 8 {
             let tx = self.conn.transaction()?;
-            tx.execute_batch(include_str!("schema_v8.sql"))?;
+            tx.execute_batch(scenote_core::schema::MIGRATIONS[8 - 1])?;
             tx.pragma_update(None, "user_version", 8)?;
             tx.commit()?;
         }
@@ -806,23 +776,6 @@ impl Store {
     }
 }
 
-/// 人間が直接編集した後の由来。AI 由来の要素は「混在」になる。
-fn origin_after_human_edit(current: &str) -> &'static str {
-    if current == ORIGIN_HUMAN {
-        ORIGIN_HUMAN
-    } else {
-        ORIGIN_MIXED
-    }
-}
-
-pub(crate) fn content_of(e: &Element) -> ElementContent {
-    ElementContent {
-        kind: e.kind.clone(),
-        speaker: e.speaker.clone(),
-        body: e.body.clone(),
-    }
-}
-
 fn next_position(tx: &Transaction, table: &str, parent_col: &str, parent_id: &str) -> Result<i64> {
     Ok(tx.query_row(
         &format!("SELECT COUNT(*) FROM {table} WHERE {parent_col} = ?1"),
@@ -917,16 +870,6 @@ pub(crate) fn touch_scene(tx: &Transaction, scene_id: &str) -> Result<()> {
     Ok(())
 }
 
-const MAX_SUMMARY_CHARS: usize = 2000;
-
-pub(crate) fn clean_summary(summary: &str) -> Result<String> {
-    let s = summary.trim().replace("\r\n", "\n");
-    if s.chars().count() > MAX_SUMMARY_CHARS {
-        return Err(AppError::Invalid(format!("場面の概要は{MAX_SUMMARY_CHARS}文字以内にしてください")));
-    }
-    Ok(s)
-}
-
 /// 場面の概要の変更を履歴に残す。
 pub(crate) fn record_summary(
     tx: &Transaction,
@@ -1011,48 +954,6 @@ fn apply_order(
         ));
     }
     write_positions(tx, table, ids)
-}
-
-/// 新しい要素列の各要素を、既存要素のどれに対応させるか決める。
-///
-/// 内容が完全に一致する要素を最長共通部分列で対応づけ、その間に挟まれた区間では
-/// 先頭から順に「同じ要素の編集」とみなして対応づける。対応のない新要素は `None`（新規作成）。
-fn align(old: &[ElementContent], new: &[ElementContent]) -> Vec<Option<usize>> {
-    let (n, m) = (old.len(), new.len());
-    let mut lcs = vec![vec![0u32; m + 1]; n + 1];
-    for i in (0..n).rev() {
-        for j in (0..m).rev() {
-            lcs[i][j] = if old[i] == new[j] {
-                lcs[i + 1][j + 1] + 1
-            } else {
-                lcs[i + 1][j].max(lcs[i][j + 1])
-            };
-        }
-    }
-    let mut plan = vec![None; m];
-    let (mut i, mut j) = (0, 0);
-    let (mut gap_i, mut gap_j) = (0, 0);
-    let pair_gap = |plan: &mut Vec<Option<usize>>, from_i: usize, to_i: usize, from_j: usize, to_j: usize| {
-        for (oi, nj) in (from_i..to_i).zip(from_j..to_j) {
-            plan[nj] = Some(oi);
-        }
-    };
-    while i < n && j < m {
-        if old[i] == new[j] {
-            pair_gap(&mut plan, gap_i, i, gap_j, j);
-            plan[j] = Some(i);
-            i += 1;
-            j += 1;
-            gap_i = i;
-            gap_j = j;
-        } else if lcs[i + 1][j] >= lcs[i][j + 1] {
-            i += 1;
-        } else {
-            j += 1;
-        }
-    }
-    pair_gap(&mut plan, gap_i, n, gap_j, m);
-    plan
 }
 
 #[cfg(test)]

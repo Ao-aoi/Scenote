@@ -7,3 +7,9 @@
 
 # ローカルデータ（シナリオ DB）
 /data/
+/core/target/
+/cloudflare/target/
+/cloudflare/build/
+/cloudflare/.wrangler/
+/cloudflare/node_modules/
+/cloudflare/.dev.vars

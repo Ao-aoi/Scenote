@@ -13,9 +13,12 @@ import { icon, iconButton } from "./icons";
 import { HistoryView } from "./historyView";
 import { PreferencesView } from "./preferencesView";
 import { StructureView } from "./structureView";
+import { CharacterView } from "./characterView";
 import { GenerationView } from "./generationView";
 import { ReadView } from "./readView";
 import { shouldUseSimple, startSimple, switchMode } from "./simpleMode";
+import { hasFeature, logoutLocation, setEdition, type Feature } from "./edition";
+import { openMcpSettings } from "./mcpSettings";
 import { SceneEditor, type SaveState, type SceneEditorOptions } from "./sceneEditor";
 import { TEMPLATE_LABELS, type Meta, type Project, type ProjectTree, type ReferenceFile } from "./types";
 
@@ -37,7 +40,7 @@ let projects: Project[] = [];
 let tree: ProjectTree | null = null;
 let files: ReferenceFile[] = [];
 /** 本文領域に表示しているもの。 */
-type View = "scene" | "file" | "history" | "prefs" | "structure" | "generate" | "read";
+type View = "scene" | "file" | "history" | "prefs" | "structure" | "generate" | "read" | "characters";
 let view: View = "scene";
 const saveStates: Record<"scene" | "file", { state: SaveState; message?: string }> = {
   scene: { state: "saved" },
@@ -53,8 +56,9 @@ const historyHost = h("div", { class: "editor-host", hidden: true });
 const prefsHost = h("div", { class: "editor-host", hidden: true });
 const structureHost = h("div", { class: "editor-host structure-host", hidden: true });
 const generateHost = h("div", { class: "editor-host", hidden: true });
+const charactersHost = h("div", { class: "editor-host", hidden: true });
 const readHost = h("div", { class: "editor-host read-host", hidden: true });
-const main = h("main", { class: "main" }, sceneHost, fileHost, historyHost, prefsHost, structureHost, generateHost, readHost);
+const main = h("main", { class: "main" }, sceneHost, fileHost, historyHost, prefsHost, structureHost, generateHost, readHost, charactersHost);
 const historyButton = iconButton("history", "履歴", "履歴とスナップショット");
 const chatHost = h("aside", { class: "chat", "aria-label": "AI チャット" });
 const chatToggle = iconButton("ai", "AI", "AI チャットを開閉");
@@ -134,7 +138,7 @@ const chat = new ChatPanel(chatHost, {
 
 /** 提案への操作がたまっていれば、嗜好の分析をスナックバーで案内する。 */
 function promptAnalysis(): void {
-  if (!tree || view === "prefs") return;
+  if (!tree || view === "prefs" || !hasFeature("preferences")) return;
   const projectId = tree.project.id;
   void maybePromptAnalysis(projectId, () => void run(async () => {
     if (tree?.project.id !== projectId) return;
@@ -156,6 +160,7 @@ function setView(next: View): void {
   structureHost.hidden = next !== "structure";
   generateHost.hidden = next !== "generate";
   readHost.hidden = next !== "read";
+  charactersHost.hidden = next !== "characters";
   if (next !== "read") readView.close();
   main.classList.toggle("wide", next === "structure");
   historyButton.setAttribute("aria-pressed", String(next === "history"));
@@ -190,9 +195,10 @@ const readView = new ReadView(readHost, main, {
 const structureView = new StructureView(structureHost, {
   openScene: (sceneId) => void run(() => selectScene(sceneId)),
 });
+const characterView = new CharacterView(charactersHost);
 
 /** 場面・参照ファイル以外の画面（履歴・嗜好）を開く。編集中の内容は先に保存する。 */
-async function openPanel(next: "history" | "prefs" | "structure" | "generate" | "read"): Promise<void> {
+async function openPanel(next: "history" | "prefs" | "structure" | "generate" | "read" | "characters"): Promise<void> {
   if (!tree) return;
   if (!(await flushEditors())) {
     toast("編集中の内容を保存できていません。競合やエラーを解消してからやり直してください", "error");
@@ -203,6 +209,7 @@ async function openPanel(next: "history" | "prefs" | "structure" | "generate" | 
   if (next === "history") await historyView.open(tree.project.id);
   else if (next === "structure") await structureView.open(tree.project.id);
   else if (next === "generate") await generationView.open(tree.project.id);
+  else if (next === "characters") await characterView.open(tree.project.id);
   else if (next === "read") await readView.open(tree, editor.sceneId);
   else await preferencesView.open(tree.project.id, projects);
   renderNav();
@@ -281,7 +288,7 @@ async function openProject(projectId: string | null): Promise<void> {
   localStorage.setItem(LAST_PROJECT_KEY, projectId);
   renderProjectSelect();
   renderNav();
-  await chat.setProject(projectId);
+  if (hasFeature("ai")) await chat.setProject(projectId);
   promptAnalysis();
 }
 
@@ -503,7 +510,15 @@ function renderNav(): void {
   const generateActive = view === "generate";
   const prefsSection = h(
     "section", { class: "chapter files" },
-    h("ul", {}, h(
+    h("ul", {}, !hasFeature("characters") ? null : h(
+      "li", { class: view === "characters" ? "scene-item active" : "scene-item" },
+      h("button", {
+        type: "button",
+        class: "scene-link",
+        "aria-current": view === "characters" ? "true" : undefined,
+        onclick: () => void run(() => openPanel("characters")),
+      }, "キャラクター"),
+    ), !hasFeature("generate") ? null : h(
       "li", { class: generateActive ? "scene-item active" : "scene-item" },
       h("button", {
         type: "button",
@@ -511,7 +526,7 @@ function renderNav(): void {
         "aria-current": generateActive ? "true" : undefined,
         onclick: () => void run(() => openPanel("generate")),
       }, "作品づくり（AI）"),
-    ), h(
+    ), !hasFeature("structure") ? null : h(
       "li", { class: structureActive ? "scene-item active" : "scene-item" },
       h("button", {
         type: "button",
@@ -519,7 +534,7 @@ function renderNav(): void {
         "aria-current": structureActive ? "true" : undefined,
         onclick: () => void run(() => openPanel("structure")),
       }, "構造（分岐・変数・チェック）"),
-    ), h(
+    ), !hasFeature("preferences") ? null : h(
       "li", { class: prefsActive ? "scene-item active" : "scene-item" },
       h("button", {
         type: "button",
@@ -568,8 +583,8 @@ function renderNav(): void {
         await refreshTree();
       }),
     }, icon("plus"), "章"),
-    fileSection,
-    prefsSection,
+    ...(hasFeature("files") ? [fileSection] : []),
+    ...(["characters", "generate", "structure", "preferences"].some((f) => hasFeature(f as Feature)) ? [prefsSection] : []),
   );
 }
 
@@ -596,14 +611,32 @@ chatToggle.addEventListener("click", () => {
 settingsButton.addEventListener("click", () =>
   openMenu(settingsButton, [
     { label: "プロジェクト設定…", action: () => void run(editProject) },
-    { label: "AI 設定・使用量…", action: () => void run(showAiSettings) },
+    ...(hasFeature("llm") ? [{ label: "AI 設定・使用量…", action: () => void run(showAiSettings) }] : []),
+    ...(hasFeature("mcp") ? [{ label: "AI の接続（MCP）…", action: () => void run(openMcpSettings) }] : []),
     { label: "かんたんモードに切り替え", action: () => switchMode("simple") },
-    auth.local
-      ? { label: "端末の接続…", action: () => void run(openDeviceManager) }
-      : { label: `この端末（${auth.deviceName ?? "端末"}）の接続を解除…`, action: () => void run(disconnectThisDevice) },
+    accountMenuItem(auth),
     { label: "プロジェクトを削除…", danger: true, action: () => void run(deleteProject) },
   ]),
 );
+
+/** 端末の管理（PC 本体）、端末の接続の解除、またはログアウト（Cloudflare 版）。 */
+function accountMenuItem(who: { local: boolean; deviceName: string | null }): MenuItem {
+  const logout = logoutLocation();
+  if (logout) return { label: `ログアウト（${who.deviceName ?? ""}）`, action: () => location.assign(logout) };
+  return who.local && hasFeature("devices")
+    ? { label: "端末の接続…", action: () => void run(openDeviceManager) }
+    : { label: `この端末（${who.deviceName ?? "端末"}）の接続を解除…`, action: () => void run(disconnectThisDevice) };
+}
+
+/** サーバーの版で使えない機能の入口を隠す。 */
+function applyFeatures(): void {
+  if (!hasFeature("ai")) {
+    chatToggle.hidden = true;
+    chatHost.hidden = true;
+    shell.classList.add("chat-closed", "no-chat");
+  }
+  historyButton.hidden = !hasFeature("history");
+}
 
 async function download(format: "markdown" | "json"): Promise<void> {
   if (!tree) return;
@@ -670,6 +703,7 @@ async function applyRemoteChanges(scopes: Set<string>): Promise<void> {
   if (view === "read" && tree && (scopes.has("scene") || scopes.has("tree") || scopes.has("snapshots"))) {
     await readView.refresh(tree);
   }
+  if (view === "characters" && (scopes.has("characters") || scopes.has("snapshots"))) await characterView.refresh();
   if (view === "structure" && ["structure", "scene", "tree", "snapshots"].some((x) => scopes.has(x))) {
     await structureView.open(projectId);
   }
@@ -706,9 +740,11 @@ async function start(): Promise<void> {
       return;
     }
     auth = { local: status.local, deviceName: status.device_name };
+    meta = await api.meta();
+    setEdition(meta, status);
     // スマートフォン（または、かんたんモードを選んだ端末）では、かんたんモードの画面で始める。
     if (shouldUseSimple()) {
-      await startSimple(appRoot, { meta: await api.meta(), local: status.local, deviceName: status.device_name });
+      await startSimple(appRoot, { meta, local: status.local, deviceName: status.device_name });
       return;
     }
   } catch (e) {
@@ -716,6 +752,7 @@ async function start(): Promise<void> {
     return;
   }
   setUnauthenticatedHandler(() => showPairingScreen(appRoot, "この端末の接続が解除されました。もう一度ペアリングしてください。"));
+  applyFeatures();
   // 狭い画面ではチャットが本文を覆うため、閉じた状態で始める。
   if (window.innerWidth <= 1100) {
     shell.classList.add("chat-closed");
@@ -728,7 +765,6 @@ async function start(): Promise<void> {
     onConnection: (connected) => shell.classList.toggle("offline", !connected),
   });
   try {
-    meta = await api.meta();
     editorOptions.kinds = meta.element_kinds;
     await loadProjects();
     const remembered = localStorage.getItem(LAST_PROJECT_KEY);

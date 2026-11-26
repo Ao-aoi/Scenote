@@ -1,0 +1,43 @@
+# Scenote の Cloudflare 版の設定。手順は docs/deploy-cloudflare.md を参照。
+name = "scenote"
+main = "build/worker/shim.mjs"
+compatibility_date = "2025-09-01"
+
+# *.workers.dev の URL は使わない（Cloudflare Access で保護した独自ドメインからのみ開く）。
+workers_dev = false
+preview_urls = false
+
+# 独自ドメインを指定する（例: scenote.example.com）。Cloudflare で管理しているドメインが必要。
+# routes = [{ pattern = "scenote.example.com", custom_domain = true }]
+
+[build]
+command = "worker-build --release"
+
+# Web UI（web/ を npm run build した結果）を静的アセットとして配信する。
+# /api/・MCP・OAuth だけを Worker で処理し、それ以外はアセット（見つからなければ index.html）を返す。
+[assets]
+directory = "../web/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/mcp", "/oauth/*", "/.well-known/*"]
+
+# 嗜好の自動分析（設定で有効にした場合のみ動く）の条件を確かめる間隔。
+[triggers]
+crons = ["*/15 * * * *"]
+
+[[durable_objects.bindings]]
+name = "SCENOTE"
+class_name = "ScenoteData"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ScenoteData"]
+
+[vars]
+# Cloudflare Access のチームのドメイン（例: myteam.cloudflareaccess.com）
+ACCESS_TEAM_DOMAIN = ""
+# Access のアプリケーションの Application Audience (AUD) Tag
+ACCESS_AUD = ""
+# 任意: 利用を許可するメールアドレス（カンマ区切り）。Access のポリシーに加えて確認する。
+ALLOWED_EMAILS = ""
+# Gemini の API キーはここに書かず、秘密情報として登録する: npx wrangler secret put GEMINI_API_KEY

@@ -1,0 +1,13 @@
+{
+  "name": "scenote-cloudflare",
+  "private": true,
+  "description": "Scenote の Cloudflare 版",
+  "scripts": {
+    "build:web": "npm --prefix ../web ci && npm --prefix ../web run build",
+    "dev": "npm run build:web && wrangler dev",
+    "deploy": "npm run build:web && wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.168.0"
+  }
+}

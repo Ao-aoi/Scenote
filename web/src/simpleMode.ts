@@ -14,6 +14,8 @@ import { disconnectThisDevice, openDeviceManager, showPairingScreen } from "./de
 import { askText, h, openDialog, openMenu, snackbar, toast, type MenuItem } from "./dom";
 import { connectEvents } from "./events";
 import { openAiSettings } from "./aiSettings";
+import { hasFeature, logoutLocation } from "./edition";
+import { openMcpSettings } from "./mcpSettings";
 import { icon } from "./icons";
 import { errorMessage, SceneEditor, type SaveState } from "./sceneEditor";
 import { kindLabel, type Meta, type Project, type Proposal, type ProjectTree } from "./types";
@@ -80,7 +82,10 @@ export async function startSimple(appRoot: HTMLElement, deps: Deps): Promise<voi
   const pendingHost = h("div", { class: "simple-pending", "aria-live": "polite" });
   const thinking = h("p", { class: "simple-thinking", hidden: true }, "AI が考えています…");
   const toBottom = h("button", { type: "button", class: "simple-to-bottom", title: "いちばん下へ", "aria-label": "いちばん下へ", hidden: true }, icon("down"));
-  const input = h("textarea", { class: "simple-input", rows: 1, placeholder: "本文や、AI への依頼を入力", "aria-label": "本文や AI への依頼" });
+  const withAi = hasFeature("ai");
+  const input = withAi
+    ? h("textarea", { class: "simple-input", rows: 1, placeholder: "本文や、AI への依頼を入力", "aria-label": "本文や AI への依頼" })
+    : h("textarea", { class: "simple-input", rows: 1, placeholder: "本文を入力（台詞は **名前**: 台詞）", "aria-label": "本文" });
   const send = h("button", { type: "button", class: "simple-send primary", title: "送信", "aria-label": "送信" }, icon("send"));
   scroller.append(bodyHost, pendingHost, thinking);
   shell.append(
@@ -155,7 +160,7 @@ export async function startSimple(appRoot: HTMLElement, deps: Deps): Promise<voi
     sending = value;
     input.disabled = value;
     send.disabled = value;
-    thinking.hidden = !value;
+    thinking.hidden = !value || !withAi;
     if (value) scrollToBottom();
   }
 
@@ -178,6 +183,10 @@ export async function startSimple(appRoot: HTMLElement, deps: Deps): Promise<voi
       toast("本文の変更を保存できていません。競合を解消してから送ってください", "error");
       return;
     }
+    if (!withAi) {
+      await appendDirect(content);
+      return;
+    }
     setSending(true);
     try {
       const chat = await ensureChat();
@@ -197,6 +206,35 @@ export async function startSimple(appRoot: HTMLElement, deps: Deps): Promise<voi
         pending.push({ reply: reply.content, proposals: open });
         renderPending();
         scrollToBottom();
+      }
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  /**
+   * AI を使わずに、入力を場面の末尾へそのまま追加する（AI が使えない版のため）。
+   * 場面の Markdown 記法で解釈するので、`**名前**: 台詞` の行は台詞になる。
+   */
+  async function appendDirect(content: string): Promise<void> {
+    const sid = sceneId!;
+    setSending(true);
+    thinking.hidden = true;
+    try {
+      const before = await api.getScene(sid);
+      const known = new Set(before.elements.map((e) => e.id));
+      const source = await api.getSceneMarkdown(sid);
+      const joined = source.markdown.trim() ? `${source.markdown.replace(/\s+$/, "")}\n\n${content}\n` : `${content}\n`;
+      const detail = await api.putSceneMarkdown(sid, source.revision, joined);
+      input.value = "";
+      grow();
+      await editor.syncFromServer();
+      scrollToBottom();
+      const added = detail.elements.filter((e) => !known.has(e.id)).map((e) => e.id);
+      if (added.length) {
+        snackbar(`本文に ${added.length} 件追加しました`, [{ label: "元に戻す", action: () => void undo(added) }], () => undefined, 8000);
       }
     } catch (e) {
       toast(errorMessage(e), "error");
@@ -432,15 +470,22 @@ export async function startSimple(appRoot: HTMLElement, deps: Deps): Promise<voi
 
   // ---- イベント -------------------------------------------------------
 
+  function accountItem(): MenuItem {
+    const logout = logoutLocation();
+    if (logout) return { label: `ログアウト（${deps.deviceName ?? ""}）`, action: () => location.assign(logout) };
+    return deps.local && hasFeature("devices")
+      ? { label: "端末の接続…", action: () => void guard(openDeviceManager) }
+      : { label: `この端末（${deps.deviceName ?? "端末"}）の接続を解除…`, action: () => void guard(disconnectThisDevice) };
+  }
+
   sceneButton.addEventListener("click", () => void guard(pickScene));
   menu.addEventListener("click", () => {
     const items: MenuItem[] = [
       { label: `プロジェクト: ${tree?.project.name ?? "なし"}…`, action: () => void guard(pickProject) },
       { label: "制作モード（すべての機能）に切り替え", action: () => switchMode("full") },
-      { label: "AI 設定・使用量…", action: () => void guard(() => openAiSettings(deps.local).then(() => undefined)) },
-      deps.local
-        ? { label: "端末の接続…", action: () => void guard(openDeviceManager) }
-        : { label: `この端末（${deps.deviceName ?? "端末"}）の接続を解除…`, action: () => void guard(disconnectThisDevice) },
+      ...(hasFeature("llm") ? [{ label: "AI 設定・使用量…", action: () => void guard(() => openAiSettings(deps.local).then(() => undefined)) }] : []),
+      ...(hasFeature("mcp") ? [{ label: "AI の接続（MCP）…", action: () => void guard(openMcpSettings) }] : []),
+      accountItem(),
     ];
     openMenu(menu, items);
   });

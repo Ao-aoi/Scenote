@@ -1,7 +1,7 @@
 // 履歴とスナップショットの画面。
 //
 // - スナップショット: 任意の時点の保存（メモつき）、現在との比較、復元（復元前の状態は自動保存）。
-// - 編集履歴: 要素・参照ファイルの変更を、由来（人間・AI 提案の承認・修正して採用・復元）つきで表示する。
+// - 編集履歴: 要素・参照ファイルの変更を、由来（人間・AI 提案の承認・修正して採用・AI（MCP）・復元）つきで表示する。
 
 import { api } from "./api";
 import { askConfirm, h, openDialog, toast } from "./dom";
@@ -14,6 +14,7 @@ const ACTOR_LABELS: Record<string, string> = {
   ai_approved: "AI 提案を承認",
   ai_modified: "AI 提案を修正して採用",
   restore: "スナップショットから復元",
+  ai_direct: "AI（MCP）が直接編集",
 };
 
 const ACTION_LABELS: Record<string, string> = {

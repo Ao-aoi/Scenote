@@ -49,19 +49,8 @@ pub const DEFAULT_MODEL: &str = "gemini-flash-latest";
 pub const DEFAULT_TOKEN_LIMIT: i64 = 2_000_000;
 pub const DEFAULT_WARN_PERCENT: i64 = 80;
 
-const MAX_FILE_CHARS: usize = 200_000;
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct ReferenceFile {
-    pub id: String,
-    pub project_id: String,
-    pub name: String,
-    pub content: String,
-    pub pinned: bool,
-    pub revision: i64,
-    pub created_at: String,
-    pub updated_at: String,
-}
+pub use scenote_core::files::ReferenceFile;
 
 #[derive(Debug, Default)]
 pub struct FilePatch {
@@ -247,12 +236,7 @@ fn proposal_from_row(row: &Row) -> rusqlite::Result<Proposal> {
 }
 
 fn clean_file_content(content: String) -> Result<String> {
-    if content.chars().count() > MAX_FILE_CHARS {
-        return Err(AppError::Invalid(format!(
-            "参照ファイルは{MAX_FILE_CHARS}文字以内にしてください"
-        )));
-    }
-    Ok(content.replace("\r\n", "\n").replace('\r', "\n"))
+    scenote_core::files::clean_file_content(content).map_err(AppError::Invalid)
 }
 
 fn element_content_from(value: &Option<Value>) -> Result<ElementContent> {

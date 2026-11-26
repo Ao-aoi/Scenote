@@ -2,6 +2,8 @@
 
 import type {
   Character,
+  CharacterRelation,
+  InfoInput,
   CharacterDraft,
   CharacterFact,
   ChapterDraft,
@@ -100,6 +102,16 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return data as T;
 }
 
+/** MCP で接続している AI のクライアント（Cloudflare 版）。 */
+export interface McpClient {
+  id: string;
+  name: string;
+  /** 登録した日時（UNIX 秒）。 */
+  created_at: number;
+  /** 有効なトークンの数（0 なら現在は接続していない）。 */
+  active: number;
+}
+
 export interface ElementInput {
   kind: string;
   speaker: string;
@@ -140,6 +152,14 @@ export const api = {
   listFacts: (characterId: string) => request<CharacterFact[]>("GET", `/characters/${characterId}/facts`),
   createFact: (characterId: string, category: string, text: string) =>
     request<CharacterFact>("POST", `/characters/${characterId}/facts`, { category, text, source: "user" }),
+  updateCharacter: (id: string, patch: { name?: string; aliases?: string[] }) => request<Character>("PATCH", `/characters/${id}`, patch),
+  addFact: (characterId: string, input: InfoInput) => request<CharacterFact>("POST", `/characters/${characterId}/facts`, input),
+  updateFact: (id: string, input: InfoInput) => request<CharacterFact>("PATCH", `/character-facts/${id}`, input),
+  deleteFact: (id: string) => request<void>("DELETE", `/character-facts/${id}`),
+  listRelations: (projectId: string) => request<CharacterRelation[]>("GET", `/projects/${projectId}/character-relations`),
+  createRelation: (projectId: string, input: InfoInput) => request<CharacterRelation>("POST", `/projects/${projectId}/character-relations`, input),
+  updateRelation: (id: string, input: InfoInput) => request<CharacterRelation>("PATCH", `/character-relations/${id}`, input),
+  deleteRelation: (id: string) => request<void>("DELETE", `/character-relations/${id}`),
   generateCharacters: (projectId: string, body: { premise: string; instructions: string; count: number }) =>
     request<{ drafts: CharacterDraft[]; warnings: string[] }>("POST", `/projects/${projectId}/generate/characters`, body),
   generateWorld: (projectId: string, body: { premise: string; instructions: string; characters: CharacterDraft[] }) =>
@@ -234,10 +254,12 @@ export const api = {
   getStructure: (projectId: string) => request<Structure>("GET", `/projects/${projectId}/structure`),
 
   authStatus: () =>
-    request<{ authenticated: boolean; local: boolean; device_name: string | null; lan_enabled: boolean }>("GET", "/auth/status"),
+    request<{ authenticated: boolean; local: boolean; device_name: string | null; lan_enabled: boolean; logout_url?: string }>("GET", "/auth/status"),
   pair: (code: string, deviceName: string) =>
     request<{ device: Device }>("POST", "/auth/pair", { code, device_name: deviceName }),
   logout: () => request<void>("POST", "/auth/logout", {}),
+  listMcpClients: () => request<McpClient[]>("GET", "/mcp/clients"),
+  revokeMcpClient: (id: string) => request<void>("DELETE", `/mcp/clients/${id}`),
   listDevices: () => request<Device[]>("GET", "/devices"),
   startPairing: () => request<{ code: string; expires_in_seconds: number; urls: string[] }>("POST", "/devices/pairing", {}),
   deleteDevice: (id: string) => request<void>("DELETE", `/devices/${id}`),
