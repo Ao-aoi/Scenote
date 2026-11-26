@@ -7,8 +7,11 @@
 //! - `logic`    : 条件式・変更式
 //! - `validate` : 入力の検証・正規化と、Markdown 保存時の要素の対応づけ
 
+pub mod characters;
 pub mod diff;
 pub mod events;
+pub mod files;
+pub mod history;
 pub mod logic;
 pub mod markdown;
 pub mod model;
