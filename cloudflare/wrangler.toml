@@ -14,12 +14,12 @@ preview_urls = false
 command = "worker-build --release"
 
 # Web UI（web/ を npm run build した結果）を静的アセットとして配信する。
-# /api/ だけを Worker で処理し、それ以外はアセット（見つからなければ index.html）を返す。
+# /api/・MCP・OAuth だけを Worker で処理し、それ以外はアセット（見つからなければ index.html）を返す。
 [assets]
 directory = "../web/dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/api/*"]
+run_worker_first = ["/api/*", "/mcp", "/oauth/*", "/.well-known/*"]
 
 [[durable_objects.bindings]]
 name = "SCENOTE"

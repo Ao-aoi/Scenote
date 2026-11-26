@@ -10,7 +10,7 @@ PC を使わずに iPhone・iPad から使うための版。`cloudflare/` にあ
 ## 第1段階で使える機能
 
 プロジェクト・章・場面・要素の編集、自動保存と競合検出、Markdown 編集、分岐の設定、
-Markdown・JSON の書き出し、端末間の変更通知。かんたんモードの入力欄は、AI を使わず
+Markdown・JSON の書き出し、端末間の変更通知、MCP での AI の接続（後述）。かんたんモードの入力欄は、AI を使わず
 本文の末尾へそのまま追加する（`**名前**: 台詞` の行は台詞になる）。
 
 AI（チャット・提案・作品づくり・嗜好学習）、参照ファイル、編集履歴・スナップショット、
@@ -54,13 +54,44 @@ npx wrangler login
 npm run deploy      # web/ のビルド → Worker のビルド → デプロイ
 ```
 
-## 4. iPhone のホーム画面に追加
+## 4. MCP の経路を Access の対象から外す
+
+MCP クライアント（Claude・ChatGPT）は Access のログイン画面を通れないため、次の経路だけは Access を
+通さない設定にする。これらの経路は Scenote 自身が OAuth のトークンで保護する。
+
+Zero Trust → Access → Applications で、同じドメインにもう1つ **Self-hosted** のアプリケーションを作り、
+次のパスを登録して、ポリシーを **Action: Bypass / Include: Everyone** にする。
+
+| パス | 用途 |
+|---|---|
+| `scenote.example.com/mcp` | MCP の本体 |
+| `scenote.example.com/oauth/register` | クライアントの登録 |
+| `scenote.example.com/oauth/token` | トークンの発行 |
+| `scenote.example.com/.well-known/*` | 認可サーバーの情報 |
+
+`/oauth/authorize`（接続の許可の画面）は Access で保護したままにする。ここで本人を確認してから許可を求める。
+
+## 6. iPhone のホーム画面に追加
 
 Safari で `https://scenote.example.com` を開いて Access でログインし、共有ボタン →
 **ホーム画面に追加**。スマートフォンでは自動でかんたんモードになる。
 
 Access のログインの有効期間（Application の **Session Duration**）を長め（例: 1か月）にすると、
 ログインし直す回数が減る。
+
+## 5. Claude・ChatGPT から接続する（MCP）
+
+Scenote の **設定 → AI の接続（MCP）** に、登録する URL（`https://scenote.example.com/mcp`）が表示される。
+
+- **Claude**: 設定 → コネクタ → カスタムコネクタを追加 → URL を入力。Claude のアプリ（iPhone を含む）からも使える。
+- **ChatGPT**: 設定 → コネクタ（開発者モード）→ 作成 → URL を入力し、認証に OAuth を選ぶ。
+
+追加すると Scenote の許可の画面が開く（未ログインなら先に Cloudflare Access のログイン）。**許可する** を押すと接続される。
+
+接続した AI は、すべてのプロジェクトの読み取りと、承認を経ない直接の書き換えができる（全体の流れの検討・
+人物関係の整理などのプロデュースを任せるため）。書き換えた本文の由来は `ai_direct` になる。
+第1段階では編集履歴が記録されないため、大きな書き換えを頼む前に **書き出し → JSON** で保存しておくとよい。
+接続は同じ画面から解除でき、解除するとそのクライアントのトークンはすべて無効になる。
 
 ## ローカルでの確認
 
@@ -69,6 +100,7 @@ cd cloudflare
 echo 'SCENOTE_DEV_USER=dev@example.com' > .dev.vars   # localhost でだけ Access を省く
 npm run dev                                         # http://127.0.0.1:8787
 node tests/smoke.mjs http://127.0.0.1:8787          # API の通し確認
+node tests/mcp.mjs http://127.0.0.1:8787            # OAuth と MCP の通し確認
 ```
 
 ## データのバックアップ

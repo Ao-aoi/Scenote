@@ -64,6 +64,18 @@ pub fn origin_after_human_edit(current: &str) -> &'static str {
     }
 }
 
+/// `editor`（`ORIGIN_HUMAN` または `ORIGIN_AI_DIRECT`）が編集した後の由来。
+/// 同じ由来の編集なら由来を保ち、異なる由来が混ざれば「混在」にする。
+pub fn origin_after_edit(current: &str, editor: &str) -> &'static str {
+    use crate::model::ORIGIN_AI_DIRECT;
+    match (current, editor) {
+        (c, e) if c == e && e == ORIGIN_HUMAN => ORIGIN_HUMAN,
+        (c, e) if c == e && e == ORIGIN_AI_DIRECT => ORIGIN_AI_DIRECT,
+        (_, e) if e == ORIGIN_HUMAN => origin_after_human_edit(current),
+        _ => ORIGIN_MIXED,
+    }
+}
+
 pub fn content_of(e: &Element) -> ElementContent {
     ElementContent {
         kind: e.kind.clone(),
@@ -195,4 +207,19 @@ pub fn clean_attrs(
         KIND_VARIABLE_CHANGE => json!({ "effects": clean_expr(attrs.get("effects"), "変更式")? }),
         _ => attrs,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{ORIGIN_AI_APPROVED, ORIGIN_AI_DIRECT};
+
+    #[test]
+    fn origin_follows_editor() {
+        assert_eq!(origin_after_edit(ORIGIN_HUMAN, ORIGIN_HUMAN), ORIGIN_HUMAN);
+        assert_eq!(origin_after_edit(ORIGIN_AI_DIRECT, ORIGIN_AI_DIRECT), ORIGIN_AI_DIRECT);
+        assert_eq!(origin_after_edit(ORIGIN_HUMAN, ORIGIN_AI_DIRECT), ORIGIN_MIXED);
+        assert_eq!(origin_after_edit(ORIGIN_AI_DIRECT, ORIGIN_HUMAN), ORIGIN_MIXED);
+        assert_eq!(origin_after_edit(ORIGIN_AI_APPROVED, ORIGIN_HUMAN), ORIGIN_MIXED);
+    }
 }

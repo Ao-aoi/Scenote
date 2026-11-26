@@ -11,7 +11,7 @@ use crate::error::{AppError, Result};
 use crate::store::{ElementPatch, Store};
 
 /// Cloudflare 版で使える機能。画面はこれを見て、使えない機能の入口を隠す。
-pub const FEATURES: [&str; 1] = ["export"];
+pub const FEATURES: [&str; 2] = ["export", "mcp"];
 
 pub enum Body {
     Json(Value),
@@ -302,6 +302,13 @@ fn route(store: &Store, req: &ApiRequest) -> Result<ApiResponse> {
         }
         ("DELETE", ["elements", id]) => {
             store.delete_element(id)?;
+            ApiResponse::no_content()
+        }
+
+        // ---- MCP で接続しているクライアント（設定画面から解除する）
+        ("GET", ["mcp", "clients"]) => ApiResponse::ok(crate::oauth::list_clients(&store.db)?),
+        ("DELETE", ["mcp", "clients", id]) => {
+            crate::oauth::revoke_client(&store.db, id)?;
             ApiResponse::no_content()
         }
 

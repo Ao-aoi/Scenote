@@ -100,6 +100,16 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return data as T;
 }
 
+/** MCP で接続している AI のクライアント（Cloudflare 版）。 */
+export interface McpClient {
+  id: string;
+  name: string;
+  /** 登録した日時（UNIX 秒）。 */
+  created_at: number;
+  /** 有効なトークンの数（0 なら現在は接続していない）。 */
+  active: number;
+}
+
 export interface ElementInput {
   kind: string;
   speaker: string;
@@ -238,6 +248,8 @@ export const api = {
   pair: (code: string, deviceName: string) =>
     request<{ device: Device }>("POST", "/auth/pair", { code, device_name: deviceName }),
   logout: () => request<void>("POST", "/auth/logout", {}),
+  listMcpClients: () => request<McpClient[]>("GET", "/mcp/clients"),
+  revokeMcpClient: (id: string) => request<void>("DELETE", `/mcp/clients/${id}`),
   listDevices: () => request<Device[]>("GET", "/devices"),
   startPairing: () => request<{ code: string; expires_in_seconds: number; urls: string[] }>("POST", "/devices/pairing", {}),
   deleteDevice: (id: string) => request<void>("DELETE", `/devices/${id}`),

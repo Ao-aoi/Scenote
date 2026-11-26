@@ -15,6 +15,7 @@ import { askText, h, openDialog, openMenu, snackbar, toast, type MenuItem } from
 import { connectEvents } from "./events";
 import { openAiSettings } from "./aiSettings";
 import { hasFeature, logoutLocation } from "./edition";
+import { openMcpSettings } from "./mcpSettings";
 import { icon } from "./icons";
 import { errorMessage, SceneEditor, type SaveState } from "./sceneEditor";
 import { kindLabel, type Meta, type Project, type Proposal, type ProjectTree } from "./types";
@@ -483,6 +484,7 @@ export async function startSimple(appRoot: HTMLElement, deps: Deps): Promise<voi
       { label: `プロジェクト: ${tree?.project.name ?? "なし"}…`, action: () => void guard(pickProject) },
       { label: "制作モード（すべての機能）に切り替え", action: () => switchMode("full") },
       ...(withAi ? [{ label: "AI 設定・使用量…", action: () => void guard(() => openAiSettings(deps.local).then(() => undefined)) }] : []),
+      ...(hasFeature("mcp") ? [{ label: "AI の接続（MCP）…", action: () => void guard(openMcpSettings) }] : []),
       accountItem(),
     ];
     openMenu(menu, items);

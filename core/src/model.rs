@@ -40,6 +40,8 @@ pub const ORIGIN_AI_APPROVED: &str = "ai_approved";
 pub const ORIGIN_AI_MODIFIED: &str = "ai_modified";
 /// AI 由来の内容を人間が編集したもの。
 pub const ORIGIN_MIXED: &str = "mixed";
+/// MCP で接続した AI（Claude・ChatGPT など）が承認を経ずに直接書き込んだ内容（Cloudflare 版）。
+pub const ORIGIN_AI_DIRECT: &str = "ai_direct";
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Project {

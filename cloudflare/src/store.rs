@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use scenote_core::markdown::{self, ChapterDoc, ProjectDoc, SceneDoc};
 use scenote_core::model::*;
 use scenote_core::schema::MIGRATIONS;
-use scenote_core::validate::{self, align, content_of, origin_after_human_edit};
+use scenote_core::validate::{self, align, content_of, origin_after_edit};
 
 use crate::db::{Db, NOW};
 use crate::error::{AppError, Result};
@@ -20,6 +20,8 @@ use crate::p;
 #[derive(Clone)]
 pub struct Store {
     pub db: Db,
+    /// 書き込む主体の由来（画面からは `ORIGIN_HUMAN`、MCP からは `ORIGIN_AI_DIRECT`）。
+    pub origin: &'static str,
 }
 
 #[derive(Debug, Default)]
@@ -156,7 +158,7 @@ struct IdRow {
 
 impl Store {
     pub fn new(db: Db) -> Self {
-        Self { db }
+        Self { db, origin: ORIGIN_HUMAN }
     }
 
     /// スキーマを最新にする。PC 版と同じ SQL を順に適用し、適用済みの版は管理用の表に記録する。
@@ -413,7 +415,7 @@ impl Store {
             "UPDATE elements SET position = position + 1 WHERE scene_id = ? AND position >= ?",
             p![scene_id, position],
         )?;
-        let id = self.insert_element(scene_id, &content, position, ORIGIN_HUMAN)?;
+        let id = self.insert_element(scene_id, &content, position, self.origin)?;
         self.touch_scene(scene_id)?;
         self.get_element(&id)
     }
@@ -427,7 +429,7 @@ impl Store {
         if matches!(patch.character_id, Some(Some(_))) {
             return Err(AppError::Unavailable);
         }
-        let origin = origin_after_human_edit(&current.origin);
+        let origin = origin_after_edit(&current.origin, self.origin);
         let content = validate::clean_content(ElementContent {
             kind: patch.kind.unwrap_or(current.kind),
             speaker: patch.speaker.unwrap_or(current.speaker),
@@ -517,12 +519,12 @@ impl Store {
                     let existing = &old[*i];
                     used.insert(existing.id.as_str());
                     if old_contents[*i] != new[new_index] {
-                        self.update_element_content(&existing.id, &new[new_index], origin_after_human_edit(&existing.origin))?;
+                        self.update_element_content(&existing.id, &new[new_index], origin_after_edit(&existing.origin, self.origin))?;
                     }
                     self.db.exec("UPDATE elements SET position = ? WHERE id = ?", p![position, existing.id.as_str()])?;
                 }
                 None => {
-                    self.insert_element(scene_id, &new[new_index], position, ORIGIN_HUMAN)?;
+                    self.insert_element(scene_id, &new[new_index], position, self.origin)?;
                 }
             }
         }
@@ -531,6 +533,21 @@ impl Store {
         }
         self.touch_scene(scene_id)?;
         self.scene_detail(scene_id)
+    }
+
+    /// 場面の末尾に Markdown の本文を追加する。
+    pub fn append_markdown(&self, scene_id: &str, source: &str) -> Result<SceneDetail> {
+        let (scene, current) = self.scene_markdown(scene_id)?;
+        let source = source.trim_matches('\n');
+        if source.trim().is_empty() {
+            return Err(AppError::Invalid("追加する本文がありません".into()));
+        }
+        let joined = if current.trim().is_empty() {
+            format!("{source}\n")
+        } else {
+            format!("{}\n\n{source}\n", current.trim_end_matches('\n'))
+        };
+        self.replace_scene_markdown(scene_id, scene.revision, &joined)
     }
 
     fn project_doc(&self, project_id: &str) -> Result<ProjectDoc> {

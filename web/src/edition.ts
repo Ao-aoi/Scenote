@@ -6,7 +6,7 @@
 import type { Meta } from "./types";
 
 /** 版によって使えないことがある機能。 */
-export type Feature = "ai" | "files" | "history" | "preferences" | "structure" | "devices";
+export type Feature = "ai" | "files" | "history" | "preferences" | "structure" | "devices" | "mcp";
 
 let features: string[] | null = null;
 let logoutUrl: string | null = null;
@@ -17,6 +17,8 @@ export function setEdition(meta: Meta, status: { logout_url?: string }): void {
 }
 
 export function hasFeature(feature: Feature): boolean {
+  // MCP は Cloudflare 版だけの機能（PC 版は features を返さない）。
+  if (feature === "mcp") return features?.includes("mcp") ?? false;
   return features === null || features.includes(feature);
 }
 

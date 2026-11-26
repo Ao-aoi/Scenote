@@ -833,6 +833,9 @@ LLMが返した構造化データは、必ずアプリ側でスキーマ検証�
 - **認証**：Cloudflare Access。Worker が `Cf-Access-Jwt-Assertion` の署名（RS256、WebCrypto）・発行元・AUD・有効期限を検証する。任意で `ALLOWED_EMAILS` でも限定する。`*.workers.dev` は使わない。CSRF 対策（`X-Scenote` ヘッダー・Origin の照合）は PC 版と同じ。開発時のみ、localhost で `SCENOTE_DEV_USER` を設定すると Access を省ける。
 - **機能の段階的な移植**：`/api/meta` の `features` で使える機能を返し、画面（`web/src/edition.ts`）は使えない機能の入口を隠す。PC 版は `features` を返さない（すべて使える）。第1段階は執筆の基本（プロジェクト・章・場面・要素・Markdown・分岐の設定・書き出し・変更通知）のみ。未対応の API は 501 を返す。編集履歴はまだ記録しない。
 - **かんたんモード**：AI が使えない版では、入力欄の内容を AI を通さず場面の Markdown として末尾に追加する。
+- **MCP サーバー**：Cloudflare 版の `/mcp`（Streamable HTTP、JSON 応答のみ。`cloudflare/src/mcp.rs`）。外部の上位モデル（Claude・ChatGPT など）が、全体の流れの整合性・人物関係・面白さを検討する「プロデューサー」として使う。ツールは HTTP API の呼び出しに置き換えて処理し、検証・競合検出・変更通知は画面と同じになる。
+- **MCP からの書き込み（6.2 の例外）**：利用者の判断により、MCP で接続した AI は承認を経ずに直接書き込める。由来は `ai_direct`（`core` の `ORIGIN_AI_DIRECT`）とし、人間の編集と混ざれば `mixed` にする。接続の許可の画面で直接書き換えられることを明示する。履歴の移植後は、MCP の書き込みも履歴に記録する。
+- **MCP の認証**：OAuth 2.1（`cloudflare/src/oauth.rs`）。動的登録・認可コード + PKCE（S256 のみ）・リフレッシュトークン（使うたびに作り直す）。本人の確認は Access で保護した `/oauth/authorize` で行い、利用者が許可した場合だけコードを発行する。コードとトークンは SHA-256 のハッシュだけを保存する。アクセストークンは1時間、リフレッシュトークンは30日。`/mcp`・`/oauth/register`・`/oauth/token`・`/.well-known/*` は Access の対象から外す。接続中のクライアントは設定画面から解除できる。
 
 ### 20.8 保留中の事項
 

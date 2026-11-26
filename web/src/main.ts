@@ -17,6 +17,7 @@ import { GenerationView } from "./generationView";
 import { ReadView } from "./readView";
 import { shouldUseSimple, startSimple, switchMode } from "./simpleMode";
 import { hasFeature, logoutLocation, setEdition } from "./edition";
+import { openMcpSettings } from "./mcpSettings";
 import { SceneEditor, type SaveState, type SceneEditorOptions } from "./sceneEditor";
 import { TEMPLATE_LABELS, type Meta, type Project, type ProjectTree, type ReferenceFile } from "./types";
 
@@ -598,6 +599,7 @@ settingsButton.addEventListener("click", () =>
   openMenu(settingsButton, [
     { label: "プロジェクト設定…", action: () => void run(editProject) },
     ...(hasFeature("ai") ? [{ label: "AI 設定・使用量…", action: () => void run(showAiSettings) }] : []),
+    ...(hasFeature("mcp") ? [{ label: "AI の接続（MCP）…", action: () => void run(openMcpSettings) }] : []),
     { label: "かんたんモードに切り替え", action: () => switchMode("simple") },
     accountMenuItem(auth),
     { label: "プロジェクトを削除…", danger: true, action: () => void run(deleteProject) },
