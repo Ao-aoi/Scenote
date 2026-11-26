@@ -134,8 +134,12 @@ export async function openAiSettings(local = true): Promise<boolean> {
           )
         : h(
             "p", { class: "hint" },
-            settings.has_api_key ? "API キーは PC に登録済みです。" : "API キーが未登録です。",
-            "API キーの登録・変更は、安全のため PC 本体の画面からのみ行えます。",
+            settings.api_key_editable === false
+              ? (settings.has_api_key ? "API キーは登録済みです。" : "API キーが未登録です。")
+              : (settings.has_api_key ? "API キーは PC に登録済みです。" : "API キーが未登録です。"),
+            settings.api_key_editable === false
+              ? "API キーは Cloudflare の秘密情報 GEMINI_API_KEY で登録します（手順は docs/deploy-cloudflare.md）。"
+              : "API キーの登録・変更は、安全のため PC 本体の画面からのみ行えます。",
           ),
       local && settings.has_api_key ? h("label", { class: "check" }, removeKey, "保存済みの API キーを削除する") : null,
       h("div", { class: "form-row" }, h("span", {}, "Gemini モデル"), model.element),

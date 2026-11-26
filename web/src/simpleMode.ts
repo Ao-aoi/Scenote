@@ -483,7 +483,7 @@ export async function startSimple(appRoot: HTMLElement, deps: Deps): Promise<voi
     const items: MenuItem[] = [
       { label: `プロジェクト: ${tree?.project.name ?? "なし"}…`, action: () => void guard(pickProject) },
       { label: "制作モード（すべての機能）に切り替え", action: () => switchMode("full") },
-      ...(withAi ? [{ label: "AI 設定・使用量…", action: () => void guard(() => openAiSettings(deps.local).then(() => undefined)) }] : []),
+      ...(hasFeature("llm") ? [{ label: "AI 設定・使用量…", action: () => void guard(() => openAiSettings(deps.local).then(() => undefined)) }] : []),
       ...(hasFeature("mcp") ? [{ label: "AI の接続（MCP）…", action: () => void guard(openMcpSettings) }] : []),
       accountItem(),
     ];

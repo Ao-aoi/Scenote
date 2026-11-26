@@ -12,7 +12,7 @@ use crate::files::FilePatch;
 use crate::store::{ElementPatch, Store};
 
 /// Cloudflare 版で使える機能。画面はこれを見て、使えない機能の入口を隠す。
-pub const FEATURES: [&str; 4] = ["export", "mcp", "history", "files"];
+pub const FEATURES: [&str; 9] = ["export", "mcp", "history", "files", "structure", "preferences", "generate", "llm", "characters"];
 
 pub enum Body {
     Json(Value),
@@ -58,6 +58,8 @@ pub struct Caller {
 }
 
 pub struct ApiRequest<'a> {
+    /// 嗜好を分析中のプロジェクト（状況の表示に使う）。
+    pub analyzing: Option<&'a str>,
     pub method: &'a str,
     /// `/api/` を除いたパス。
     pub path: &'a str,
@@ -181,6 +183,78 @@ struct SnapshotBody {
 }
 
 #[derive(Deserialize)]
+struct OutlineScene {
+    title: String,
+    #[serde(default)]
+    summary: String,
+}
+
+#[derive(Deserialize)]
+struct OutlineChapter {
+    title: String,
+    #[serde(default)]
+    scenes: Vec<OutlineScene>,
+}
+
+#[derive(Deserialize)]
+struct OutlineBody {
+    chapters: Vec<OutlineChapter>,
+}
+
+#[derive(Deserialize)]
+struct VariableBody {
+    name: String,
+    var_type: String,
+    #[serde(default)]
+    initial: String,
+    #[serde(default)]
+    description: String,
+}
+
+#[derive(Deserialize)]
+struct UpdateVariableBody {
+    name: Option<String>,
+    var_type: Option<String>,
+    initial: Option<String>,
+    description: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RuleBody {
+    text: String,
+    #[serde(default = "default_category")]
+    category: String,
+}
+
+fn default_category() -> String {
+    "other".into()
+}
+
+#[derive(Deserialize)]
+struct UpdateRuleBody {
+    text: Option<String>,
+    category: Option<String>,
+    confidence: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct CopyRuleBody {
+    project_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ImportBody {
+    source_project_id: String,
+}
+
+#[derive(Deserialize)]
+struct PreferenceSettingsBody {
+    auto_update: Option<bool>,
+    include_direct_edits: Option<bool>,
+    auto_analyze: Option<bool>,
+}
+
+#[derive(Deserialize)]
 struct MarkdownBody {
     base_revision: i64,
     markdown: String,
@@ -253,6 +327,15 @@ fn route(store: &Store, req: &ApiRequest) -> Result<ApiResponse> {
             let b: OrderBody = parse(body)?;
             store.reorder_chapters(id, &b.ids)?;
             ApiResponse::no_content()
+        }
+        ("POST", ["projects", id, "outline"]) => {
+            let b: OutlineBody = parse(body)?;
+            let chapters: Vec<(String, Vec<(String, String)>)> = b
+                .chapters
+                .into_iter()
+                .map(|c| (c.title, c.scenes.into_iter().map(|s| (s.title, s.summary)).collect()))
+                .collect();
+            ApiResponse::created(store.append_outline(id, &chapters)?)
         }
         ("GET", ["projects", id, "export", "markdown"]) => {
             let name = store.get_project(id)?.name;
@@ -331,8 +414,68 @@ fn route(store: &Store, req: &ApiRequest) -> Result<ApiResponse> {
         ("GET", ["snapshots", id, "compare"]) => ApiResponse::ok(store.compare_snapshot(id)?),
         ("POST", ["snapshots", id, "restore"]) => ApiResponse::ok(store.restore_snapshot(id)?),
 
+        // ---- 変数・構造チェック
+        ("GET", ["projects", id, "variables"]) => {
+            store.get_project(id)?;
+            ApiResponse::ok(store.list_variables(id)?)
+        }
+        ("POST", ["projects", id, "variables"]) => {
+            let b: VariableBody = parse(body)?;
+            ApiResponse::created(store.create_variable(id, &b.name, &b.var_type, &b.initial, &b.description)?)
+        }
+        ("PATCH", ["variables", id]) => {
+            let b: UpdateVariableBody = parse(body)?;
+            ApiResponse::ok(store.update_variable(id, b.name.as_deref(), b.var_type.as_deref(), b.initial.as_deref(), b.description.as_deref())?)
+        }
+        ("DELETE", ["variables", id]) => {
+            store.delete_variable(id)?;
+            ApiResponse::no_content()
+        }
+        ("GET", ["projects", id, "structure"]) => ApiResponse::ok(store.structure(id)?),
+
+        // ---- 執筆嗜好
+        ("GET", ["projects", id, "preferences"]) => ApiResponse::ok(store.profile(id, req.analyzing)?),
+        ("POST", ["projects", id, "preferences", "import"]) => {
+            let b: ImportBody = parse(body)?;
+            ApiResponse::ok(json!({ "copied": store.import_project_rules(&b.source_project_id, id)? }))
+        }
+        ("POST", ["projects", id, "preferences", "rules"]) => {
+            let b: RuleBody = parse(body)?;
+            ApiResponse::created(store.create_rule(Some(id), &b.text, &b.category)?)
+        }
+        ("POST", ["preferences", "global", "rules"]) => {
+            let b: RuleBody = parse(body)?;
+            ApiResponse::created(store.create_rule(None, &b.text, &b.category)?)
+        }
+        ("PATCH", ["preferences", "rules", id]) => {
+            let b: UpdateRuleBody = parse(body)?;
+            ApiResponse::ok(store.update_rule(id, b.text.as_deref(), b.category.as_deref(), b.confidence)?)
+        }
+        ("DELETE", ["preferences", "rules", id]) => {
+            store.delete_rule(id)?;
+            ApiResponse::no_content()
+        }
+        ("POST", ["preferences", "rules", id, "copy"]) => {
+            let b: CopyRuleBody = parse(body)?;
+            ApiResponse::ok(json!({ "copied": store.copy_rules(&[id.to_string()], b.project_id.as_deref())? }))
+        }
+        ("POST", ["preferences", "suggestions", id, "approve"]) => ApiResponse::ok(store.approve_suggestion(id)?),
+        ("POST", ["preferences", "suggestions", id, "reject"]) => ApiResponse::ok(store.reject_suggestion(id)?),
+        ("PUT", ["settings", "preferences"]) => {
+            let b: PreferenceSettingsBody = parse(body)?;
+            store.update_preference_settings(b.auto_update, b.include_direct_edits, b.auto_analyze)?;
+            ApiResponse::ok(store.preference_settings()?)
+        }
+
+        // ---- AI の使用量
+        ("GET", ["usage"]) => ApiResponse::ok(store.usage_status()?),
+        ("POST", ["usage", "resume"]) => {
+            store.resume_llm()?;
+            ApiResponse::ok(store.usage_status()?)
+        }
+
         // 未対応の一覧は、画面が空の一覧として扱えるよう空で返す。
-        ("GET", ["projects", id, "chats" | "variables"]) => {
+        ("GET", ["projects", id, "chats"]) => {
             store.get_project(id)?;
             ApiResponse::ok(json!([]))
         }

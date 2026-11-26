@@ -181,6 +181,26 @@ await test("画面での編集は人間の由来、AI の要素を人間が直�
   assert.equal((await r.json()).element.origin, "mixed");
 });
 
+await test("AI（MCP）が書いた本文への手直しから嗜好を学習し、MCP で参照できる", async () => {
+  const before = (await (await fetch(`${base}/api/projects/${projectId}/preferences`)).json());
+  assert.ok(before.unanalyzed >= 1);
+  const r = await fetch(`${base}/api/projects/${projectId}/preferences/analyze`, { method: "POST", headers: { "x-scenote": "1" } });
+  const result = await r.json();
+  assert.equal(r.status, 200, JSON.stringify(result));
+  assert.equal(result.suggestions.length, 1);
+  assert.match(result.suggestions[0].evidence[0], /^h\d+$/);
+  assert.equal(result.warnings.length, 1);
+  assert.equal(result.profile.unanalyzed, 0);
+  const approved = await fetch(`${base}/api/preferences/suggestions/${result.suggestions[0].id}/approve`, { method: "POST", headers: { "x-scenote": "1" } });
+  assert.equal((await approved.json()).status, "approved");
+  const prefs = await call("get_preferences", { project_id: projectId });
+  assert.match(prefs.data, /地の文は短く切る/);
+  const structure = await call("get_structure", { project_id: projectId });
+  assert.ok(Array.isArray(structure.data.nodes));
+  const v = await call("create_variable", { project_id: projectId, name: "勇気", var_type: "number", initial: "0" });
+  assert.equal(v.isError, false);
+});
+
 await test("リフレッシュトークンで更新し、古いものは使えない", async () => {
   const r = await token({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: clientId });
   assert.equal(r.status, 200);

@@ -10,6 +10,10 @@ pub enum AppError {
     Forbidden(String),
     /// Cloudflare 版ではまだ使えない機能。
     Unavailable,
+    /// LLM の呼び出しに失敗した。メッセージはユーザーへ表示する。
+    Llm(String),
+    /// 使用量の上限に達し、API 利用を停止している。
+    LlmStopped,
     /// DB など内部エラー。詳細はクライアントへ返さない。
     Internal(String),
 }
@@ -26,6 +30,11 @@ impl fmt::Display for AppError {
                 "他の画面または端末で先に変更されています。最新の内容を読み込んでから編集し直してください"
             ),
             AppError::Unavailable => write!(f, "この機能は Cloudflare 版ではまだ使えません"),
+            AppError::Llm(msg) => write!(f, "{msg}"),
+            AppError::LlmStopped => write!(
+                f,
+                "API 使用量が上限に達したため、AI の利用を停止しています。設定で上限を変更するか、利用を再開してください"
+            ),
             AppError::Internal(_) => write!(f, "サーバー内部でエラーが発生しました"),
         }
     }
@@ -39,6 +48,8 @@ impl AppError {
             AppError::Conflict { .. } => 409,
             AppError::Forbidden(_) => 403,
             AppError::Unavailable => 501,
+            AppError::Llm(_) => 502,
+            AppError::LlmStopped => 429,
             AppError::Internal(_) => 500,
         }
     }
@@ -50,6 +61,8 @@ impl AppError {
             AppError::Conflict { .. } => "conflict",
             AppError::Forbidden(_) => "forbidden",
             AppError::Unavailable => "unavailable",
+            AppError::Llm(_) => "llm",
+            AppError::LlmStopped => "llm_stopped",
             AppError::Internal(_) => "internal",
         }
     }

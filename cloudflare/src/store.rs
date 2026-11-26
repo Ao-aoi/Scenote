@@ -352,6 +352,37 @@ impl Store {
         self.get_scene(&id)
     }
 
+    /// 章・場面（概要つき）をまとめて末尾に追加する（作品づくりのストーリー案の採用などで使う）。
+    pub fn append_outline(&self, project_id: &str, chapters: &[(String, Vec<(String, String)>)]) -> Result<Vec<Scene>> {
+        self.get_project(project_id)?;
+        let mut cleaned = Vec::new();
+        for (title, scenes) in chapters {
+            let title = validate::clean_title("章の題名", title).map_err(invalid)?;
+            let mut list = Vec::new();
+            for (st, summary) in scenes {
+                list.push((
+                    validate::clean_title("場面の題名", st).map_err(invalid)?,
+                    validate::clean_summary(summary).map_err(invalid)?,
+                ));
+            }
+            cleaned.push((title, list));
+        }
+        if cleaned.is_empty() {
+            return Err(AppError::Invalid("追加する章がありません".into()));
+        }
+        let mut ids = Vec::new();
+        for (title, scenes) in &cleaned {
+            let chapter_id = self.insert_chapter(project_id, title)?;
+            for (st, summary) in scenes {
+                let id = self.insert_scene(&chapter_id, st)?;
+                self.db.exec("UPDATE scenes SET summary = ? WHERE id = ?", p![summary.as_str(), id.as_str()])?;
+                ids.push(id);
+            }
+        }
+        self.touch_project(project_id)?;
+        ids.iter().map(|id| self.get_scene(id)).collect()
+    }
+
     pub fn rename_scene(&self, id: &str, title: &str) -> Result<Scene> {
         self.get_scene(id)?;
         let title = validate::clean_title("場面の題名", title).map_err(invalid)?;

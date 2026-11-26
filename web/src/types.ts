@@ -198,6 +198,8 @@ export interface LlmSettings {
   has_api_key: boolean;
   monthly_token_limit: number;
   warn_percent: number;
+  /** false: API キーは画面からではなく、サーバーの設定（Cloudflare の秘密情報）で登録する。 */
+  api_key_editable?: boolean;
 }
 
 export interface Exchange {
@@ -383,13 +385,43 @@ export interface Character {
   aliases: string[];
 }
 
+export type InfoSource = "user" | "confirmed" | "inferred";
+export type InfoStatus = "active" | "proposed" | "rejected";
+
 export interface CharacterFact {
   id: string;
   character_id: string;
   category: string;
   text: string;
-  source: "user" | "confirmed" | "inferred";
-  status: "active" | "proposed" | "rejected";
+  source: InfoSource;
+  confidence: number | null;
+  evidence: string[];
+  status: InfoStatus;
+}
+
+export interface CharacterRelation {
+  id: string;
+  project_id: string;
+  from_character_id: string;
+  to_character_id: string;
+  kind: string;
+  text: string;
+  source: InfoSource;
+  confidence: number | null;
+  evidence: string[];
+  status: InfoStatus;
+}
+
+/** 情報・関係の作成と更新の入力（更新では省略した項目を変えない）。 */
+export interface InfoInput {
+  category?: string;
+  kind?: string;
+  text?: string;
+  source?: InfoSource;
+  status?: InfoStatus;
+  confidence?: number | null;
+  from_character_id?: string;
+  to_character_id?: string;
 }
 
 export interface CharacterDraft {

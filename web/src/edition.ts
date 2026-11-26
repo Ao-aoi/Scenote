@@ -6,7 +6,8 @@
 import type { Meta } from "./types";
 
 /** 版によって使えないことがある機能。 */
-export type Feature = "ai" | "files" | "history" | "preferences" | "structure" | "devices" | "mcp";
+/** ai: AI チャットと提案、generate: 作品づくり、llm: AI 設定と使用量。 */
+export type Feature = "ai" | "files" | "history" | "preferences" | "structure" | "devices" | "mcp" | "generate" | "llm" | "characters";
 
 let features: string[] | null = null;
 let logoutUrl: string | null = null;

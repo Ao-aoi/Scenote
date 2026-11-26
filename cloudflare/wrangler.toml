@@ -21,6 +21,10 @@ binding = "ASSETS"
 not_found_handling = "single-page-application"
 run_worker_first = ["/api/*", "/mcp", "/oauth/*", "/.well-known/*"]
 
+# 嗜好の自動分析（設定で有効にした場合のみ動く）の条件を確かめる間隔。
+[triggers]
+crons = ["*/15 * * * *"]
+
 [[durable_objects.bindings]]
 name = "SCENOTE"
 class_name = "ScenoteData"
@@ -36,3 +40,4 @@ ACCESS_TEAM_DOMAIN = ""
 ACCESS_AUD = ""
 # 任意: 利用を許可するメールアドレス（カンマ区切り）。Access のポリシーに加えて確認する。
 ALLOWED_EMAILS = ""
+# Gemini の API キーはここに書かず、秘密情報として登録する: npx wrangler secret put GEMINI_API_KEY

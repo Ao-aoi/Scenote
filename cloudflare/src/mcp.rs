@@ -21,7 +21,9 @@ Scenote はゲームシナリオ（章 → 場面 → 要素）を管理する�
 4. 場面全体の書き直しは write_scene（Markdown）、一部の変更は update_element、追記は append_to_scene。
 5. 人物は get_characters で一覧（情報・関係つき）を確認し、create_character・add_character_fact・add_relation などで整理する。
    世界観・設定資料は参照ファイル（list_files・read_file・create_file・update_file）にまとめる。
-6. 大きな書き換えの前には create_snapshot で保存する。誤った変更は list_history で確認し、restore_snapshot で戻せる
+6. 書く前に get_preferences で利用者の執筆の嗜好（文体・語彙・テンポなど）を確認し、それに沿って書く。
+7. 分岐・変数を使う作品では get_structure で場面のつながり・到達できない場面・式の誤りを確認する。
+8. 大きな書き換えの前には create_snapshot で保存する。誤った変更は list_history で確認し、restore_snapshot で戻せる
    （復元の直前の状態も自動で保存される）。
 
 人物の情報（fact）の由来 source: user（利用者が決めた設定）・confirmed（確認済み）・inferred（推定。確信度 confidence 0〜1 が必要）。
@@ -128,6 +130,19 @@ pub fn tools() -> Value {
             &["file_id", "base_revision"], false),
         tool("delete_file", "参照ファイルを削除する（事前に利用者へ確認すること）。", json!({ "file_id": id("参照ファイル") }), &["file_id"], false),
 
+        tool("get_preferences", "利用者の執筆の嗜好（学習したルールと手動で設定したルール）を返す。書く前に確認し、それに沿って書く。",
+            json!({ "project_id": id("プロジェクト") }), &["project_id"], true),
+        tool("get_structure", "場面グラフ（場面のつながり・分岐）、キャラクター相関、変数の使用状況、構造上の問題（移動先の欠落・到達できない場面・式の誤りなど）を返す。",
+            json!({ "project_id": id("プロジェクト") }), &["project_id"], true),
+        tool("list_variables", "変数の一覧を返す。", json!({ "project_id": id("プロジェクト") }), &["project_id"], true),
+        tool("create_variable", "変数を作る。型は number・bool・text。条件式・変更式で使う。",
+            json!({ "project_id": id("プロジェクト"), "name": { "type": "string" }, "var_type": { "type": "string", "enum": ["number", "bool", "text"] },
+                    "initial": { "type": "string" }, "description": { "type": "string" } }), &["project_id", "name", "var_type"], false),
+        tool("update_variable", "変数の名前・型・初期値・説明を変更する。",
+            json!({ "variable_id": id("変数"), "name": { "type": "string" }, "var_type": { "type": "string", "enum": ["number", "bool", "text"] },
+                    "initial": { "type": "string" }, "description": { "type": "string" } }), &["variable_id"], false),
+        tool("delete_variable", "変数を削除する。", json!({ "variable_id": id("変数") }), &["variable_id"], false),
+
         tool("list_history", "編集履歴を新しい順に返す（変更前後の内容と、誰が変更したか）。",
             json!({ "project_id": id("プロジェクト"), "scene_id": id("場面（絞り込み）"), "limit": { "type": "integer" } }), &["project_id"], true),
         tool("list_snapshots", "スナップショット（保存した時点）の一覧を返す。", json!({ "project_id": id("プロジェクト") }), &["project_id"], true),
@@ -148,6 +163,8 @@ pub enum Call {
     Characters { project_id: String },
     /// 参照ファイルの一覧（本文を除く）。
     FileList { project_id: String },
+    /// 執筆の嗜好の説明。
+    Preferences { project_id: String },
 }
 
 fn s(args: &Value, key: &str) -> Result<String, String> {
@@ -228,6 +245,12 @@ pub fn to_call(name: &str, args: &Value) -> Result<Call, String> {
         "create_file" => Api { method: "POST", path: format!("projects/{}/files", id("project_id")?), body: pick(args, &["name", "content", "pinned"]) },
         "update_file" => Api { method: "PATCH", path: format!("files/{}", id("file_id")?), body: pick(args, &["base_revision", "name", "content", "pinned"]) },
         "delete_file" => Api { method: "DELETE", path: format!("files/{}", id("file_id")?), body: Value::Null },
+        "get_preferences" => Call::Preferences { project_id: id("project_id")? },
+        "get_structure" => Api { method: "GET", path: format!("projects/{}/structure", id("project_id")?), body: Value::Null },
+        "list_variables" => Api { method: "GET", path: format!("projects/{}/variables", id("project_id")?), body: Value::Null },
+        "create_variable" => Api { method: "POST", path: format!("projects/{}/variables", id("project_id")?), body: pick(args, &["name", "var_type", "initial", "description"]) },
+        "update_variable" => Api { method: "PATCH", path: format!("variables/{}", id("variable_id")?), body: pick(args, &["name", "var_type", "initial", "description"]) },
+        "delete_variable" => Api { method: "DELETE", path: format!("variables/{}", id("variable_id")?), body: Value::Null },
         "list_history" => {
             let mut q = url::form_urlencoded::Serializer::new(String::new());
             if let Ok(scene) = id("scene_id") {

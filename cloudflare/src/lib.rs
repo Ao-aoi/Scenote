@@ -8,15 +8,19 @@
 //!   成功したら、接続中の端末へ変更を WebSocket で通知する（形式は PC 版と同じ）。
 
 pub mod access;
+mod ai;
 pub mod api;
 pub mod characters;
 pub mod db;
 pub mod error;
 pub mod files;
 pub mod history;
+pub mod llm;
 pub mod mcp;
+pub mod preferences;
 pub mod oauth;
 pub mod store;
+pub mod structure;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -184,13 +188,29 @@ fn authorization_server_metadata(url: &Url) -> Result<Response> {
     }))
 }
 
+/// 定期実行（cron）: 嗜好の自動分析の条件を確かめる。設定が無効なら何もしない。
+#[event(scheduled)]
+async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+    let result = async {
+        let stub = env.durable_object("SCENOTE")?.id_from_name("main")?.get_stub()?;
+        stub.fetch_with_str("https://scenote.internal/internal/auto-analyze").await
+    }
+    .await;
+    if let Err(e) = result {
+        console_error!("scheduled auto-analysis failed: {e}");
+    }
+}
+
 #[durable_object]
 pub struct ScenoteData {
     state: State,
     /// `ctx.storage`（`transactionSync` を呼ぶため）。
     storage: JsValue,
     store: Store,
+    env: Env,
     migrated: Cell<bool>,
+    /// 嗜好を分析中のプロジェクト（同時に 1 件だけ実行する）。
+    analyzing: RefCell<Option<String>>,
 }
 
 impl ScenoteData {
@@ -237,10 +257,11 @@ impl ScenoteData {
     fn execute(&self, store: Store, method: String, api_path: String, body: String, email: String, client: Option<String>) -> ApiResponse {
         let mutating = api::is_mutating(&method);
         let path = format!("/api/{}", api_path.split('?').next().unwrap_or(""));
+        let analyzing = self.analyzing.borrow().clone();
         let response = if mutating {
             self.run_tx(move || {
                 let caller = Caller { email };
-                let r = api::handle(&store, &ApiRequest { method: &method, path: &api_path, body: &body, caller: &caller });
+                let r = api::handle(&store, &ApiRequest { analyzing: analyzing.as_deref(), method: &method, path: &api_path, body: &body, caller: &caller });
                 let commit = r.is_success();
                 (r, commit)
             })
@@ -250,7 +271,7 @@ impl ScenoteData {
             })
         } else {
             let caller = Caller { email };
-            api::handle(&store, &ApiRequest { method: &method, path: &api_path, body: &body, caller: &caller })
+            api::handle(&store, &ApiRequest { analyzing: analyzing.as_deref(), method: &method, path: &api_path, body: &body, caller: &caller })
         };
         if mutating && response.is_success() {
             let scopes = scenote_core::events::scopes_for(&path);
@@ -416,6 +437,17 @@ impl ScenoteData {
                 let body = if body.is_null() { String::new() } else { body.to_string() };
                 self.execute(store, method.to_string(), path, body, email, Some("mcp".into()))
             }
+            Ok(mcp::Call::Preferences { project_id }) => match store.get_project(&project_id).and_then(|_| store.preference_prompt(&project_id)) {
+                Ok(text) => ApiResponse {
+                    status: 200,
+                    body: Body::Download {
+                        content_type: "text/plain",
+                        disposition: String::new(),
+                        text: if text.is_empty() { "学習した嗜好はまだありません。既存の本文の文体に合わせて書いてください。".into() } else { text },
+                    },
+                },
+                Err(e) => ApiResponse::error(&e),
+            },
             Ok(mcp::Call::Characters { project_id }) => match store.characters_json(&project_id) {
                 Ok((characters, relations)) => ApiResponse { status: 200, body: Body::Json(json!({ "characters": characters, "relations": relations })) },
                 Err(e) => ApiResponse::error(&e),
@@ -485,13 +517,13 @@ fn to_response(r: ApiResponse) -> Result<Response> {
 }
 
 impl DurableObject for ScenoteData {
-    fn new(state: State, _env: Env) -> Self {
+    fn new(state: State, env: Env) -> Self {
         let inner = state._inner();
         let raw: JsValue = inner.clone().into();
         let storage = Reflect::get(&raw, &"storage".into()).unwrap_or(JsValue::UNDEFINED);
         let state = State::from(inner);
         let store = Store::new(Db::new(state.storage().sql()));
-        Self { state, storage, store, migrated: Cell::new(false) }
+        Self { state, storage, store, env, migrated: Cell::new(false), analyzing: RefCell::new(None) }
     }
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
@@ -521,6 +553,14 @@ impl DurableObject for ScenoteData {
         let mut api_path = path.strip_prefix("/api/").unwrap_or("").to_string();
         if let Some(q) = url.query() {
             api_path = format!("{api_path}?{q}");
+        }
+        if path == "/internal/auto-analyze" {
+            // 定期実行（Worker の scheduled）からだけ呼ばれる。外部からこの経路へは届かない。
+            let done = self.run_auto_analysis().await;
+            return Response::from_json(&json!({ "analyzed": done }));
+        }
+        if let Some(response) = self.handle_ai(&method, &api_path, &body, client.clone()).await {
+            return to_response(response);
         }
         let response = self.execute(self.store.clone(), method, api_path, body, email, client);
         to_response(response)

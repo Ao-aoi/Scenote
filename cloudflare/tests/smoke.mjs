@@ -237,7 +237,7 @@ await test("スナップショットの作成・比較・復元", async () => {
 await test("未対応の機能は 501、存在しない API は 404", async () => {
   assert.deepEqual((await api("GET", `/projects/${project.id}/chats`)).data, []);
   assert.equal((await api("POST", `/projects/${project.id}/chats`, { title: "x" })).status, 501);
-  assert.equal((await api("GET", "/usage")).status, 501);
+  assert.equal((await api("GET", "/devices")).status, 501);
   assert.equal((await api("GET", "/nothing")).status, 404);
 });
 
