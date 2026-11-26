@@ -8,16 +8,13 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use rusqlite::{params, OptionalExtension, Row};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::error::{AppError, Result};
 use crate::logic::{self, check_condition, check_effects, VarType};
 use crate::model::*;
 use crate::store::{new_id, Store, NOW};
 
-const MAX_OPTIONS: usize = 20;
-const MAX_EXPR_CHARS: usize = 500;
-const MAX_ATTRS_BYTES: usize = 20_000;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Variable {
@@ -122,18 +119,6 @@ fn text_of<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("")
 }
 
-fn clean_expr(v: Option<&Value>, what: &str) -> Result<String> {
-    let s = match v {
-        None | Some(Value::Null) => "",
-        Some(Value::String(s)) => s.as_str(),
-        _ => return Err(AppError::Invalid(format!("{what}は文字列で指定してください"))),
-    };
-    if s.chars().count() > MAX_EXPR_CHARS {
-        return Err(AppError::Invalid(format!("{what}は{MAX_EXPR_CHARS}文字以内にしてください")));
-    }
-    Ok(s.trim().to_string())
-}
-
 impl Store {
     // ---- 変数 ---------------------------------------------------------
 
@@ -226,60 +211,33 @@ impl Store {
 
     /// 要素の種類に応じて `attrs` の形を検証・正規化する。式の中身の誤りは保存を妨げず、構造チェックで知らせる。
     pub(crate) fn clean_attrs(&self, scene_id: &str, kind: &str, attrs: Value) -> Result<Value> {
-        if !attrs.is_object() {
-            return Err(AppError::Invalid("要素の追加情報はオブジェクトで指定してください".into()));
-        }
-        if attrs.to_string().len() > MAX_ATTRS_BYTES {
-            return Err(AppError::Invalid("要素の追加情報が大きすぎます".into()));
-        }
         let project_id: String = self.conn.query_row(
             "SELECT c.project_id FROM scenes s JOIN chapters c ON c.id = s.chapter_id WHERE s.id = ?1",
             [scene_id],
             |r| r.get(0),
         )?;
-        let target = |v: Option<&Value>| -> Result<Option<String>> {
-            match v {
-                None | Some(Value::Null) => Ok(None),
-                Some(Value::String(s)) if s.is_empty() => Ok(None),
-                Some(Value::String(s)) => {
-                    let ok: Option<String> = self
-                        .conn
-                        .query_row(
-                            "SELECT s.id FROM scenes s JOIN chapters c ON c.id = s.chapter_id WHERE s.id = ?1 AND c.project_id = ?2",
-                            params![s, project_id],
-                            |r| r.get(0),
-                        )
-                        .optional()?;
-                    ok.map(Some).ok_or_else(|| AppError::Invalid("移動先の場面が見つかりません".into()))
+        let mut db_error = None;
+        let result = scenote_core::validate::clean_attrs(kind, attrs, |target| {
+            match self
+                .conn
+                .query_row(
+                    "SELECT 1 FROM scenes s JOIN chapters c ON c.id = s.chapter_id WHERE s.id = ?1 AND c.project_id = ?2",
+                    params![target, project_id],
+                    |_| Ok(()),
+                )
+                .optional()
+            {
+                Ok(found) => found.is_some(),
+                Err(e) => {
+                    db_error = Some(e);
+                    false
                 }
-                _ => Err(AppError::Invalid("移動先は場面の ID で指定してください".into())),
             }
-        };
-        Ok(match kind {
-            KIND_CHOICE => {
-                let options = attrs.get("options").and_then(Value::as_array).cloned().unwrap_or_default();
-                if options.len() > MAX_OPTIONS {
-                    return Err(AppError::Invalid(format!("選択肢は{MAX_OPTIONS}個までです")));
-                }
-                let mut out = Vec::new();
-                for o in &options {
-                    let text = clean_expr(o.get("text"), "選択肢の文")?;
-                    out.push(json!({
-                        "text": text,
-                        "target": target(o.get("target"))?,
-                        "condition": clean_expr(o.get("condition"), "条件式")?,
-                        "effects": clean_expr(o.get("effects"), "変更式")?,
-                    }));
-                }
-                json!({ "options": out })
-            }
-            KIND_TRANSITION => json!({
-                "target": target(attrs.get("target"))?,
-                "condition": clean_expr(attrs.get("condition"), "条件式")?,
-            }),
-            KIND_VARIABLE_CHANGE => json!({ "effects": clean_expr(attrs.get("effects"), "変更式")? }),
-            _ => attrs,
-        })
+        });
+        if let Some(e) = db_error {
+            return Err(e.into());
+        }
+        result.map_err(AppError::Invalid)
     }
 
     // ---- 可視化・構造チェック ------------------------------------------
@@ -543,6 +501,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn content(kind: &str, speaker: &str, body: &str) -> ElementContent {
         ElementContent { kind: kind.into(), speaker: speaker.into(), body: body.into() }

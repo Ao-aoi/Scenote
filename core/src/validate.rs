@@ -122,3 +122,77 @@ pub fn align(old: &[ElementContent], new: &[ElementContent]) -> Vec<Option<usize
     plan
 }
 
+
+pub const MAX_OPTIONS: usize = 20;
+pub const MAX_EXPR_CHARS: usize = 500;
+pub const MAX_ATTRS_BYTES: usize = 20_000;
+
+fn clean_expr(v: Option<&serde_json::Value>, what: &str) -> Checked<String> {
+    use serde_json::Value;
+    let s = match v {
+        None | Some(Value::Null) => "",
+        Some(Value::String(s)) => s.as_str(),
+        _ => return Err(format!("{what}は文字列で指定してください")),
+    };
+    if s.chars().count() > MAX_EXPR_CHARS {
+        return Err(format!("{what}は{MAX_EXPR_CHARS}文字以内にしてください"));
+    }
+    Ok(s.trim().to_string())
+}
+
+/// 要素の追加情報（分岐の設定）を検証して正規化する。式の誤りは保存を妨げない（構造チェックで知らせる）。
+///
+/// `scene_exists` は、移動先の場面 ID が同じプロジェクトに存在するかを返す。
+pub fn clean_attrs(
+    kind: &str,
+    attrs: serde_json::Value,
+    mut scene_exists: impl FnMut(&str) -> bool,
+) -> Checked<serde_json::Value> {
+    use crate::model::{KIND_CHOICE, KIND_TRANSITION, KIND_VARIABLE_CHANGE};
+    use serde_json::{json, Value};
+    if !attrs.is_object() {
+        return Err("要素の追加情報はオブジェクトで指定してください".into());
+    }
+    if attrs.to_string().len() > MAX_ATTRS_BYTES {
+        return Err("要素の追加情報が大きすぎます".into());
+    }
+    let mut target = |v: Option<&Value>| -> Checked<Option<String>> {
+        match v {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(s)) if s.is_empty() => Ok(None),
+            Some(Value::String(s)) => {
+                if scene_exists(s) {
+                    Ok(Some(s.clone()))
+                } else {
+                    Err("移動先の場面が見つかりません".into())
+                }
+            }
+            _ => Err("移動先は場面の ID で指定してください".into()),
+        }
+    };
+    Ok(match kind {
+        KIND_CHOICE => {
+            let options = attrs.get("options").and_then(Value::as_array).cloned().unwrap_or_default();
+            if options.len() > MAX_OPTIONS {
+                return Err(format!("選択肢は{MAX_OPTIONS}個までです"));
+            }
+            let mut out = Vec::new();
+            for o in &options {
+                let text = clean_expr(o.get("text"), "選択肢の文")?;
+                out.push(json!({
+                    "text": text,
+                    "target": target(o.get("target"))?,
+                    "condition": clean_expr(o.get("condition"), "条件式")?,
+                    "effects": clean_expr(o.get("effects"), "変更式")?,
+                }));
+            }
+            json!({ "options": out })
+        }
+        KIND_TRANSITION => json!({
+            "target": target(attrs.get("target"))?,
+            "condition": clean_expr(attrs.get("condition"), "条件式")?,
+        }),
+        KIND_VARIABLE_CHANGE => json!({ "effects": clean_expr(attrs.get("effects"), "変更式")? }),
+        _ => attrs,
+    })
+}
